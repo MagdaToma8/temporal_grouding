@@ -169,3 +169,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+checkpoints/
+data/
+embeddings
+results/
+ruff.toml
+.ruff_cache/
+wandb/
+yolo*.pt
+*.ipynb

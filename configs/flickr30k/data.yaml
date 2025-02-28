@@ -1,0 +1,3 @@
+data_dir: data/flickr30k/
+data_file: data/flickr30k/dataset_flickr30k.json
+num_captions_to_use: 5

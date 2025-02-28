@@ -1,0 +1,9 @@
+data_dir: data/flickr30k/
+data_file: data/flickr30k/dataset_flickr30k.json
+
+embeddings_path: "embeddings/flickr30k/clip-vit-base-patch32/"
+topk: 5
+use_embeddings: True
+use_detected_objects: False
+use_classified_objects: False
+use_generated_captions: True
