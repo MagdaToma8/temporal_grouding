@@ -1,8 +1,8 @@
-from typing import Optional, List, Tuple
-
 import os
 import argparse
+import pickle
 import random
+from typing import Optional, List, Tuple
 
 import numpy as np
 from tqdm import tqdm
@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import AutoProcessor
+import wandb
 
 from src.datasets.cub import load_cub_data
 from src.datasets.flickr import load_flickr_data
@@ -18,7 +19,7 @@ from src.models.configs import get_model_config
 from src.models.attentive_summarizer import AttentiveSummarizer
 from src.run_inference_image import bitsandbytes_8bit_config
 from src.utils.metrics import RetrievalEvaluator, plot_metrics
-from src.utils.utils import load_yaml_file, load_json_file
+from src.utils.utils import load_yaml_file, load_json_file, generate_experiment_id
 
 
 def parse_arguments():
@@ -128,7 +129,7 @@ def parse_arguments():
     parser.add_argument(
         "--feedback_aggregation",
         type=str,
-        default="images",
+        default=None,
         help="Feedback aggregation method (images/object_detection)"
     )
     parser.add_argument(
@@ -141,7 +142,7 @@ def parse_arguments():
         "--top_k_eval",
         type=int,
         nargs="+",
-        default=[1, 5],
+        default=[1, 5, 10],
         help="Number of top k images to evaluate"
     )
     parser.add_argument(
@@ -149,6 +150,24 @@ def parse_arguments():
         type=float,
         default=0.01,
         help="Temperature for softmax"
+    )
+    parser.add_argument(
+        "--disable_wandb",
+        action="store_true",
+        default=False,
+        help="Disable wandb logging"
+    )
+    parser.add_argument(
+        "--wandb_log_all_turns",
+        action="store_true",
+        default=False,
+        help="Log all turns"
+    )
+    parser.add_argument(
+        "--visualize_attention_ratio",
+        type=float,
+        default=0.0,
+        help="Visualize attention maps for the given ratio of images"
     )
     return parser.parse_args()
 
@@ -240,12 +259,19 @@ def get_embeddings_from_captions(
         return_tensors="pt",
         padding=True,
         truncation=True
-    ).to(vlm_wrapper.model.device)
+    )
 
+    text_tokens = {k: v for k, v in tokenized_text.items() if k != 'pixel_values'} # remove dummy image inputs
+
+    tokenized_text = tokenized_text.to(vlm_wrapper.model.device)
     caption_embeddings = vlm_wrapper.get_embeddings(
         inputs=tokenized_text
     )
-    return caption_embeddings
+
+    return (
+        caption_embeddings,
+        text_tokens
+    )
 
 
 def softmax_weighted_aggregation(
@@ -304,6 +330,13 @@ def process_yolo_texts(
 def main():
     args = parse_arguments()
     data_config = load_yaml_file(args.data_config)
+    experiment_id = generate_experiment_id()
+    if not args.disable_wandb:
+        wandb.init(
+            project="multi-turn-retrieval",
+            config=args,
+            name=f"{args.model_id.split('/')[-1]}-{args.feedback_aggregation}-{experiment_id}"
+        )
 
     # Load model and processor
     model_config = get_model_config(args.model_family, args.model_id)
@@ -349,7 +382,10 @@ def main():
 
     # These feedback loops DO NOT require re-calculating textual embeddings
     # The feedback is applied in the feature space
-    if args.feedback_aggregation in ["gt_user", "yolo", "images", "generated_captions", "attentive_summarizer"]:
+    if args.feedback_aggregation is None:
+        num_turns_dataloader = 1
+        num_turns_feedback = 1
+    elif args.feedback_aggregation in ["gt_user", "yolo", "images", "generated_captions", "attentive_summarizer"]:
         num_turns_dataloader = 1
         num_turns_feedback = args.num_turns
     # These feedback loops require re-calculating textual embeddings
@@ -366,6 +402,7 @@ def main():
         text_embeddings = []
         vision_model_outputs = []
         text_model_outputs = []
+        captions_input_ids = []
 
         # In case embeddings are already calculated, load them
         # This is only applicable if we don't need to re-calculate embeddings with feedback
@@ -396,7 +433,7 @@ def main():
                 text_embeddings.append(outputs['text_embeds'].detach().cpu())
                 vision_model_outputs.append(outputs['vision_model_output'].detach().cpu())
                 text_model_outputs.append(outputs['text_model_output'].detach().cpu())
-
+                captions_input_ids.extend(input_ids.detach().cpu().tolist())
                 ground_truth_labels.extend(class_label.tolist())
                 img_paths.extend(img_path_batch.tolist())
                 if args.debug and i > 10:
@@ -471,16 +508,23 @@ def main():
             # Sort similarities (logits) for each query in descending order
             sorted_indices = torch.argsort(logits_per_text, dim=1, descending=True)
             sorted_img_paths = img_paths[sorted_indices]
-            logits_per_text_sorted = torch.gather(logits_per_text, 1, sorted_indices)
 
             # Evaluation and plotting routine
             if not args.no_metrics:
                 evaluator = RetrievalEvaluator(
                     top_k=args.top_k_eval,
                     metrics=['hits', 'mrr'],
-                    compute_per_class=True,
                 )
                 metrics, metrics_per_class = evaluator.evaluate(sorted_indices, query_idx)
+                if not args.disable_wandb:
+                    if args.wandb_log_all_turns:
+                        wandb.log({
+                            "metrics": metrics,
+                        })
+                    elif feedback_turn == num_turns_feedback - 1:
+                        wandb.log({
+                            "metrics": metrics,
+                        })
 
                 for metric, value in sorted(metrics.items()):
                     print(f"{metric}: {value}")
@@ -541,11 +585,12 @@ def main():
                             classification_list=topk_classification_texts
                         )
                         # Get embeddings from YOLO-based object detection and image classification
-                        yolo_embeddings = get_embeddings_from_captions(
+                        yolo_embeddings, _ = get_embeddings_from_captions(
                             captions=yolo_words,
                             processor=processor,
                             vlm_wrapper=vlm_wrapper
-                        )['text_embeds'].detach().cpu()
+                        )
+                        yolo_embeddings = yolo_embeddings['text_embeds'].detach().cpu()
 
                         # Aggregate YOLO-based object detection and image classification
                         avg_relevance_vector[j], avg_non_relevance_vector[j] = softmax_weighted_aggregation(
@@ -562,11 +607,12 @@ def main():
                     for j, img_paths_list in enumerate(tqdm(topk_image_paths, "Feedback from AI-generated captions")):
                         captions = [generated_captions[os.path.basename(img_path)] for img_path in img_paths_list]
 
-                        object_text_embeddings = get_embeddings_from_captions(
+                        object_text_embeddings, tokenized_text = get_embeddings_from_captions(
                             captions=captions,
                             processor=processor,
                             vlm_wrapper=vlm_wrapper
-                        )['text_embeds'].detach().cpu()
+                        )
+                        object_text_embeddings = object_text_embeddings['text_embeds'].detach().cpu()
 
                         avg_pos_output, avg_neg_output = softmax_weighted_aggregation(
                             embeddings=object_text_embeddings,
@@ -603,36 +649,24 @@ def main():
                     # Generate embeddings of AI-generated captions
                     captions_text_model_outputs = []
                     captions_embeddings = []
+                    tokenized_texts = []
                     topk_captions = []
-                    for j, img_paths_list in enumerate(tqdm(topk_image_paths, "Feedback from AI-generated captions")):
+                    for _, img_paths_list in enumerate(tqdm(topk_image_paths, "Feedback from AI-generated captions")):
                         captions = [generated_captions[os.path.basename(img_path)] for img_path in img_paths_list]
                         topk_captions.append(captions)
-                        # tokenized_text = processor(
-                        #     images=torch.rand(args.top_k_feedback, 3, 224, 224),
-                        #     text=captions,
-                        #     return_tensors="pt",
-                        #     padding=True,
-                        #     truncation=True
-                        # ).to(vlm_wrapper.model.device)
-                        # embeddings = vlm_wrapper.get_embeddings(
-                        #     inputs=tokenized_text
-                        # )
-                        embeddings = get_embeddings_from_captions(
+                        embeddings, tokenized_text = get_embeddings_from_captions(
                             captions=captions,
                             processor=processor,
                             vlm_wrapper=vlm_wrapper
                         )
                         captions_text_model_outputs.append(embeddings['text_model_output'].detach().cpu())
                         captions_embeddings.append(embeddings['text_embeds'].detach().cpu())
+                        tokenized_texts.append(tokenized_text)
                     captions_embeddings = torch.stack(captions_embeddings, dim=0)
 
-                    # Summarizer for global embeddings
-                    # if (
-                    #     experiment_config.get("global_embeddings_vision", True) and
-                    #     experiment_config.get("global_embeddings_text", True)
-                    # ):
                     relevance_vector_neg = torch.zeros_like(text_embeddings)
                     relevance_vector_pos = []
+                    attn_for_visualization = []
 
                     for j in tqdm(
                         range(0, text_embeddings.shape[0]),
@@ -657,7 +691,8 @@ def main():
                             xattn_text = xattn[..., :image_tokens_start]
                             xattn_image = xattn[..., image_tokens_start:]
 
-                            # Sum cross-attention weights along attention heads and 2 output tokens (CLS and text query embedding)
+                            # Sum cross-attention weights along attention heads and 2 output tokens
+                            #   (CLS and text query embedding)
                             xattn_text_sum = (
                                 xattn_text
                                 .sum(dim=1)
@@ -688,7 +723,8 @@ def main():
 
                         # Summarization of feedback using local embeddings (patches and tokens)
                         else:
-                            # Use summarizer to get query with feedback and cross-attention weights (from each patch and token)
+                            # Use summarizer to get query with feedback and cross-attention weights
+                            #   (from each patch and token)
                             summarized_vector, xattn = summarizer(
                                 text_model_outputs[j].unsqueeze(0),
                                 captions_text_model_outputs[j].unsqueeze(0),
@@ -702,17 +738,41 @@ def main():
                             #   number of image tokens is num_patches * args.top_k_feedback
                             image_tokens_start = xattn.shape[-1] - \
                                 (topk_vision_embeddings[j].shape[1] * args.top_k_feedback)
-                            x_attn_text = xattn[..., :image_tokens_start]
-                            x_attn_image = xattn[..., image_tokens_start:]
 
-                            # Sum cross-attention weights along attention heads and output tokens (<CLS>, query_token1, query_token2, ...)
+                            xattn_text = xattn[..., :image_tokens_start]
+                            xattn_image = xattn[..., image_tokens_start:]
+
+                            if random.random() < args.visualize_attention_ratio:
+                                query = processor.tokenizer.decode(captions_input_ids[j], skip_special_tokens=True)
+                                img_path = img_paths[j]
+                                topk_img_paths = topk_image_paths[j]
+                                tokens = tokenized_texts[j]['input_ids'].flatten()
+                                tokens = processor.tokenizer.convert_ids_to_tokens(tokens)
+                                attn_per_patch = xattn_image.sum(dim=0).sum(dim=0).reshape(args.top_k_feedback, -1)
+                                attn_per_token = xattn_text.sum(dim=0).sum(dim=0)
+                                attn_per_token_zip = list(zip(tokens, attn_per_token))
+                                attn_per_token_zip = [
+                                    (x[0].replace("</w>", ""), x[1].item())
+                                    for x in attn_per_token_zip
+                                    if "</w>" in x[0]
+                                ]
+                                attn_for_visualization.append({
+                                    "query": query,
+                                    "img_path": img_path,
+                                    "topk_img_paths": topk_img_paths,
+                                    "attn_per_patch": attn_per_patch,
+                                    "attn_per_token": attn_per_token_zip
+                                })
+
+                            # Sum cross-attention weights along attention heads and output tokens
+                            #   (<CLS>, query_token1, query_token2, ...)
                             xattn_text_sum = (
-                                x_attn_text.sum(dim=0).sum(dim=0)
+                                xattn_text.sum(dim=0).sum(dim=0)
                                 .reshape(args.top_k_feedback, -1)
                                 .sum(dim=1)
                             ).unsqueeze(0)
                             xattn_image_sum = (
-                                x_attn_image.sum(dim=0).sum(dim=0)
+                                xattn_image.sum(dim=0).sum(dim=0)
                                 .reshape(args.top_k_feedback, -1)
                                 .sum(dim=1)
                             ).unsqueeze(0)
@@ -741,6 +801,18 @@ def main():
                     avg_non_relevance_vector = relevance_vector_neg
                     avg_non_relevance_vector = F.normalize(avg_non_relevance_vector, p=2, dim=-1)
 
+                    if attn_for_visualization:
+                        attn_save_path = os.path.join(
+                            'results',
+                            'xattn',
+                            os.path.basename(data_config.get('captions_file', 'captions')).split('.')[0],
+                            args.model_id.split("/")[-1],
+                            args.summarizer_checkpoint.split("/")[-2]
+                        )
+                        os.makedirs(attn_save_path, exist_ok=True)
+                        with open(os.path.join(attn_save_path, 'attn_for_visualization.pkl'), 'wb') as f:
+                            pickle.dump(attn_for_visualization, f)
+
                 # Simulate explicit user feedback by providing more ground truth captions
                 elif args.feedback_aggregation == "gt_user":
                     avg_relevance_vector = torch.zeros_like(text_embeddings)
@@ -766,6 +838,11 @@ def main():
                         gt_relevance = torch.stack(gt_relevance, dim=0).mean(dim=0)
                         avg_relevance_vector[args.batch_size * j: args.batch_size * (j + 1)] = gt_relevance
 
+                else:
+                    raise ValueError(f"Invalid feedback aggregation method: {args.feedback_aggregation}. "
+                                     "Retrieval is done without feedback.")
+
+    wandb.finish()
 
 if __name__ == "__main__":
     main()
