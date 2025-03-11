@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional, Union
+import random
 
 import torch
 import torch.nn as nn
@@ -18,7 +19,8 @@ class AttentiveSummarizer(nn.Module):
             vlm_wrapper: Optional[VLMWrapper] = None,
             global_embeddings_vision: bool = False,
             global_embeddings_text: bool = False,
-            checkpoint_path: Optional[str] = None
+            checkpoint_path: Optional[str] = None,
+            random_mask: bool = False
     ):
         super().__init__()
         self.config = pooler_config
@@ -50,8 +52,10 @@ class AttentiveSummarizer(nn.Module):
             pooler_config.get("embed_dim", 768),
             text_dim
         )
+
         self.global_embeddings_vision = global_embeddings_vision
         self.global_embeddings_text = global_embeddings_text
+
         # Filter out the keys of the state dict that are not relevant
         if checkpoint_path is not None:
             device = next(self.parameters()).device
@@ -70,6 +74,8 @@ class AttentiveSummarizer(nn.Module):
                 self.vision_projection.weight.to(device)
             )
             print(f"Weights successfully loaded from checkpoint: {checkpoint_path}")
+
+        self.random_mask = random_mask
 
     def _get_text_features(self, inputs: Dict[str, Any], global_embeddings: bool = False):
         assert self.vlm_wrapper is not None
@@ -106,7 +112,8 @@ class AttentiveSummarizer(nn.Module):
             self,
             q: Union[torch.Tensor, Dict[str, Any]],
             text_inputs: Optional[Union[torch.Tensor, Dict[str, Any]]] = None,
-            vision_inputs: Optional[Union[torch.Tensor, Dict[str, Any]]] = None
+            vision_inputs: Optional[Union[torch.Tensor, Dict[str, Any]]] = None,
+            mask: Optional[torch.Tensor] = None
     ):
         assert text_inputs is not None or vision_inputs is not None
 
@@ -130,16 +137,32 @@ class AttentiveSummarizer(nn.Module):
         if vision_features.ndim == 2:
             vision_features = vision_features.unsqueeze(1)
 
+        if self.random_mask and self.training:
+            topk = int(text_features.shape[0] // q_features.shape[0])
+            num_k_mask_text = random.randint(0, topk - 1)
+            num_k_mask_vision = random.randint(0, topk - 1)
+            top_k_mask_indices_text = torch.randperm(topk)[:num_k_mask_text]
+            top_k_mask_indices_vision = torch.randperm(topk)[:num_k_mask_vision]
+
+            mask_text = torch.ones(q_features.shape[1] + 1, topk, text_features.shape[1])
+            mask_text[:, top_k_mask_indices_text, :] = 0
+            mask_vision = torch.ones(q_features.shape[1] + 1, topk, vision_features.shape[1])
+            mask_vision[:, top_k_mask_indices_vision, :] = 0
+
+            mask_text = mask_text.view(q_features.shape[1] + 1, -1)
+            mask_vision = mask_vision.view(q_features.shape[1] + 1, -1)
+
+            mask = torch.cat([mask_text, mask_vision], dim=1).to(self.vlm_wrapper.model.device)
+
         text_features = text_features.view(q_features.shape[0], -1, text_features.shape[-1])
         vision_features = vision_features.view(q_features.shape[0], -1, vision_features.shape[-1])
-
         # print("Text features:", text_features.shape)
         # print("Vision features:", vision_features.shape)
 
         text_image_features = torch.cat([text_features, vision_features], dim=1)
 
         # print("Text-image features:", text_image_features.shape)
-        x, xattn = self.pooler(q_features, text_image_features)
+        x, xattn = self.pooler(q_features, text_image_features, mask=mask)
         # print("Pooler output:", x.shape)
         x = self.projection(x[:, 0, :])
         return x, xattn
@@ -188,7 +211,8 @@ class AlignmentAttentiveSummarizer(LightningModule):
             temperature: float = None,
             learning_rate: float = 1e-4,
             weight_decay: float = 0.01,
-            max_epochs: int = 100
+            max_epochs: int = 100,
+            random_mask: bool = False
     ):
         super().__init__()
         self.summarizer = summarizer

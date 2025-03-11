@@ -87,7 +87,8 @@ def main():
         vision_dim=experiment_config["vision_dim"],
         vlm_wrapper=vlm_wrapper,
         global_embeddings_vision=experiment_config.get("global_embeddings_vision", True),
-        global_embeddings_text=experiment_config.get("global_embeddings_text", True)
+        global_embeddings_text=experiment_config.get("global_embeddings_text", True),
+        random_mask=experiment_config.get("random_mask", False)
     )
 
     # Initialize Lightning module
@@ -96,7 +97,8 @@ def main():
         pooler_config=experiment_config["pooler_config"],
         learning_rate=args.learning_rate or experiment_config.get("learning_rate", 1e-4),
         weight_decay=args.weight_decay or experiment_config.get("weight_decay", 0.01),
-        max_epochs=args.max_epochs or experiment_config.get("max_epochs", 100)
+        max_epochs=args.max_epochs or experiment_config.get("max_epochs", 100),
+        random_mask=experiment_config.get("random_mask", False)
     )
 
     # Setup training
