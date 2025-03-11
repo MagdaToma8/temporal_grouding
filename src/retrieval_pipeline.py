@@ -148,7 +148,7 @@ def parse_arguments():
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.01,
+        default=0.05,
         help="Temperature for softmax"
     )
     parser.add_argument(
@@ -168,6 +168,38 @@ def parse_arguments():
         type=float,
         default=0.0,
         help="Visualize attention maps for the given ratio of images"
+    )
+    parser.add_argument(
+        "--original_rocchio",
+        action="store_true",
+        default=False,
+        help="Use original Rocchio's algorithm (without weighted aggregation)"
+    )
+    parser.add_argument(
+        "--rocchio_alpha",
+        type=float,
+        default=0.8,
+        help="Original query weight"
+    )
+    parser.add_argument(
+        "--rocchio_beta",
+        type=float,
+        default=0.1,
+        help="Positive feedback weight"
+    )
+    parser.add_argument(
+        "--rocchio_gamma",
+        type=float,
+        default=0.1,
+        help="Negative feedback weight"
+    )
+    parser.add_argument(
+        "--accumulate_feedback",
+        action="store_true",
+        default=False,
+        help="Adjust query embeddings across turns."
+             "If False, original queries are fused with new feedback on each turn."
+             "If True, adjusted queries are further fused with new feedback on each turn."
     )
     return parser.parse_args()
 
@@ -328,12 +360,17 @@ def process_yolo_texts(
 
 
 def main():
+    random.seed(28)
     args = parse_arguments()
     data_config = load_yaml_file(args.data_config)
     experiment_id = generate_experiment_id()
+
+    project_suffix = ""
+    if args.wandb_log_all_turns:
+        project_suffix = "-log-all"
     if not args.disable_wandb:
         wandb.init(
-            project="multi-turn-retrieval",
+            project=f"multi-turn-retrieval{project_suffix}",
             config=args,
             name=f"{args.model_id.split('/')[-1]}-{args.feedback_aggregation}-{experiment_id}"
         )
@@ -403,6 +440,7 @@ def main():
         vision_model_outputs = []
         text_model_outputs = []
         captions_input_ids = []
+        attn_for_visualization_indices = []
 
         # In case embeddings are already calculated, load them
         # This is only applicable if we don't need to re-calculate embeddings with feedback
@@ -466,12 +504,12 @@ def main():
         for feedback_turn in range(num_turns_feedback):
             if avg_relevance_vector is not None:
                 text_embeddings = rocchio_update(
-                    query_embeddings=orig_text_embeddings,
+                    query_embeddings=text_embeddings if args.accumulate_feedback else orig_text_embeddings,
                     avg_relevance_vector=avg_relevance_vector,
                     avg_non_relevance_vector=avg_non_relevance_vector,
-                    alpha=0.8,
-                    beta=0.1,
-                    gamma=0.1,
+                    alpha=args.rocchio_alpha,
+                    beta=args.rocchio_beta,
+                    gamma=args.rocchio_gamma,
                     norm_output=True
                 )
 
@@ -541,29 +579,66 @@ def main():
                         out_filename=f'{args.text_from}'
                     )
 
+                if args.visualize_attention_ratio != 0 and feedback_turn == num_turns_feedback - 1:
+                    results_after_aggregation = []
+                    sorted_image_paths = sorted_img_paths[:, :args.top_k_feedback + 5]
+                    topk_image_embeddings = image_embeddings[sorted_indices[:, :args.top_k_feedback + 5]]
+                    for idx in attn_for_visualization_indices:
+                        similarities = torch.matmul(
+                            topk_image_embeddings[idx],
+                            text_embeddings[idx].unsqueeze(0).T
+                        ).detach().cpu().numpy()
+                        results_after_aggregation.append(
+                            {
+                                "img_path": img_paths[idx],
+                                "topk_img_paths": sorted_image_paths[idx],
+                                "similarities": similarities
+                            }
+                        )
+                    with open(os.path.join(
+                        'results',
+                        'xattn',
+                        os.path.basename(data_config.get('captions_file', 'captions')).split('.')[0],
+                        args.model_id.split("/")[-1],
+                        args.summarizer_checkpoint.split("/")[-2],
+                        f"results_after_aggregation_turn_{feedback_turn + 1}.pkl"
+                    ), 'wb') as f:
+                        pickle.dump(results_after_aggregation, f)
+
             # Feedback aggregation logic
             if feedback_turn < num_turns_feedback - 1:
                 topk_image_paths = sorted_img_paths[:, :args.top_k_feedback]
+                if args.original_rocchio:
+                    lastk_image_paths = sorted_img_paths[:, -args.top_k_feedback:]
                 # Aggregate image from top-k retrieved images using their similarity to intial query embeddings
                 if args.feedback_aggregation == "images":
-                    sorted_image_embeddings = image_embeddings[sorted_indices]
+                    topk_indices = sorted_indices[:, :args.top_k_feedback]
+                    topk_image_embeddings = image_embeddings[topk_indices]
+
                     # Check if indexing works as expected
-                    for j, indices in enumerate(sorted_indices):
-                        assert torch.allclose(image_embeddings[indices], sorted_image_embeddings[j])
+                    for j, indices in enumerate(topk_indices):
+                        assert torch.allclose(image_embeddings[indices], topk_image_embeddings[j])
 
-                    # Select top-k image embeddings for each query
-                    topk_image_embeddings = sorted_image_embeddings[:, :args.top_k_feedback]
-
-                    avg_relevance_vector = torch.zeros_like(text_embeddings)
-                    avg_non_relevance_vector = torch.zeros_like(text_embeddings)
-                    # Iterate over each query and aggregate top-k rerieved image embeddings
-                    for j in range(text_embeddings.shape[0]):
-                        # Obtain softmax similarity weights for each image embedding in top-k for a given query
-                        avg_relevance_vector[j], avg_non_relevance_vector[j] = softmax_weighted_aggregation(
-                            embeddings=topk_image_embeddings[j],
-                            reference_embeddings=text_embeddings[j].unsqueeze(0),
-                            temperature=args.temperature
-                        )
+                    if args.original_rocchio:
+                        lastk_indices = sorted_indices[:, -args.top_k_feedback:]
+                        lastk_image_embeddings = image_embeddings[lastk_indices]
+                        avg_relevance_vector = topk_image_embeddings.mean(dim=1)
+                        avg_non_relevance_vector = lastk_image_embeddings.mean(dim=1)
+                    else:
+                        avg_relevance_vector = torch.zeros_like(text_embeddings)
+                        avg_non_relevance_vector = torch.zeros_like(text_embeddings)
+                        avg_relevance_vector[j] = F.normalize(avg_relevance_vector[j], p=2, dim=-1)
+                        avg_non_relevance_vector[j] = F.normalize(avg_non_relevance_vector[j], p=2, dim=-1)
+                        # Iterate over each query and aggregate top-k rerieved image embeddings
+                        for j in range(text_embeddings.shape[0]):
+                            # Obtain softmax similarity weights for each image embedding in top-k for a given query
+                            avg_relevance_vector[j], avg_non_relevance_vector[j] = softmax_weighted_aggregation(
+                                embeddings=topk_image_embeddings[j],
+                                reference_embeddings=text_embeddings[j].unsqueeze(0),
+                                temperature=args.temperature
+                            )
+                            avg_relevance_vector[j] = F.normalize(avg_relevance_vector[j], p=2, dim=-1)
+                            avg_non_relevance_vector[j] = F.normalize(avg_non_relevance_vector[j], p=2, dim=-1)
 
                 # Aggregate information from YOLO-based object detection and image classification
                 elif args.feedback_aggregation == "yolo":
@@ -601,6 +676,9 @@ def main():
 
                 # Aggregate information from AI-generated captions
                 elif args.feedback_aggregation == "generated_captions":
+                    if args.original_rocchio:
+                        topk_image_paths = np.concatenate([topk_image_paths, lastk_image_paths], axis=1)
+                        print(topk_image_paths.shape)
                     avg_relevance_vector = torch.zeros_like(text_embeddings)
                     avg_non_relevance_vector = torch.zeros_like(text_embeddings)
 
@@ -614,13 +692,17 @@ def main():
                         )
                         object_text_embeddings = object_text_embeddings['text_embeds'].detach().cpu()
 
-                        avg_pos_output, avg_neg_output = softmax_weighted_aggregation(
-                            embeddings=object_text_embeddings,
-                            reference_embeddings=text_embeddings[j].unsqueeze(0),
-                            temperature=args.temperature
-                        )
-                        avg_relevance_vector[j] = avg_pos_output
-                        avg_non_relevance_vector[j] = avg_neg_output
+                        if args.original_rocchio:
+                            avg_relevance_vector[j] = object_text_embeddings[:args.top_k_feedback].mean(dim=0)
+                            avg_non_relevance_vector[j] = object_text_embeddings[-args.top_k_feedback:].mean(dim=0)
+                        else:
+                            avg_pos_output, avg_neg_output = softmax_weighted_aggregation(
+                                embeddings=object_text_embeddings,
+                                reference_embeddings=text_embeddings[j].unsqueeze(0),
+                                temperature=args.temperature
+                            )
+                            avg_relevance_vector[j] = avg_pos_output
+                            avg_non_relevance_vector[j] = avg_neg_output
 
                 # Attentive summarizer for feedback aggregation
                 elif args.feedback_aggregation == "attentive_summarizer":
@@ -639,8 +721,9 @@ def main():
                     )
                     summarizer.eval()
                     # Select top-k retrieved image embeddings and paths for each query
-                    sorted_image_embeddings = image_embeddings[sorted_indices]
-                    sorted_vision_embeddings = vision_model_outputs[sorted_indices]
+                    topk_indices = sorted_indices[:, :args.top_k_feedback]
+                    sorted_image_embeddings = image_embeddings[topk_indices]
+                    sorted_vision_embeddings = vision_model_outputs[topk_indices]
                     topk_image_embeddings = sorted_image_embeddings[:, :args.top_k_feedback]
                     topk_vision_embeddings = sorted_vision_embeddings[:, :args.top_k_feedback]
                     topk_image_paths = sorted_img_paths[:, :args.top_k_feedback]
@@ -667,6 +750,7 @@ def main():
                     relevance_vector_neg = torch.zeros_like(text_embeddings)
                     relevance_vector_pos = []
                     attn_for_visualization = []
+                    attn_for_visualization_indices = []
 
                     for j in tqdm(
                         range(0, text_embeddings.shape[0]),
@@ -743,6 +827,7 @@ def main():
                             xattn_image = xattn[..., image_tokens_start:]
 
                             if random.random() < args.visualize_attention_ratio:
+                                attn_for_visualization_indices.append(j)
                                 query = processor.tokenizer.decode(captions_input_ids[j], skip_special_tokens=True)
                                 img_path = img_paths[j]
                                 topk_img_paths = topk_image_paths[j]
@@ -756,9 +841,14 @@ def main():
                                     for x in attn_per_token_zip
                                     if "</w>" in x[0]
                                 ]
+                                similarities = torch.matmul(
+                                    topk_image_embeddings[j],
+                                    text_embeddings[j].unsqueeze(0).T
+                                )
                                 attn_for_visualization.append({
                                     "query": query,
                                     "img_path": img_path,
+                                    "similarities": similarities,
                                     "topk_img_paths": topk_img_paths,
                                     "attn_per_patch": attn_per_patch,
                                     "attn_per_token": attn_per_token_zip
@@ -778,9 +868,9 @@ def main():
                             ).unsqueeze(0)
 
                             # Compute softmax of aggregated cross-attention weights
-                            # (1 - xattn_text_sum) is used to get NEGATIVE relevance
-                            xattn_text_softmax = F.softmax((1 - xattn_text_sum) / args.temperature, dim=0)
-                            xattn_image_softmax = F.softmax((1 - xattn_image_sum) / args.temperature, dim=0)
+                            # (1-xattn_text_sum) is used to get NEGATIVE relevance
+                            xattn_text_softmax = F.softmax((-xattn_text_sum) / args.temperature, dim=0)
+                            xattn_image_softmax = F.softmax((-xattn_image_sum) / args.temperature, dim=0)
 
                             neg_relevance_images = torch.sum(
                                 topk_image_embeddings[j] * xattn_image_softmax.unsqueeze(-1),
@@ -837,6 +927,7 @@ def main():
                             gt_relevance.append(outputs['text_embeds'].detach().cpu())
                         gt_relevance = torch.stack(gt_relevance, dim=0).mean(dim=0)
                         avg_relevance_vector[args.batch_size * j: args.batch_size * (j + 1)] = gt_relevance
+                    avg_relevance_vector = F.normalize(avg_relevance_vector, p=2, dim=-1)
 
                 else:
                     raise ValueError(f"Invalid feedback aggregation method: {args.feedback_aggregation}. "
