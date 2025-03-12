@@ -1,10 +1,29 @@
-# Retrieval with relevance feedback
+# Text-to-image retrieval with relevance feedback
 
 ## Install dependencies
 ```
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+```
+
+## Datasets
+
+### Download COCO-2014 dataset and Karpathy splits:
+```
+mkdir data
+mkdir coco
+
+python -m src.datasets.download_coco_karpathy_splits --output_dir data/coco/annotations
+
+cd data
+wget http://images.cocodataset.org/zips/train2014.zip
+wget http://images.cocodataset.org/zips/val2014.zip
+wget http://images.cocodataset.org/zips/test2014.zip
+
+unzip train2014.zip -d coco/
+unzip val2014.zip -d coco/
+unzip test2014.zip -d coco/
 ```
 
 ## Retrieval pipeline
