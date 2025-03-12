@@ -9,7 +9,7 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from transformers import AutoProcessor, BitsAndBytesConfig
+from transformers import AutoProcessor
 import wandb
 
 from src.datasets.cub import load_cub_data
@@ -76,12 +76,6 @@ def parse_arguments():
         action="store_true",
         default=False,
         help="Debug mode: take first 10 batches"
-    )
-    parser.add_argument(
-        "--use_8bit",
-        action="store_true",
-        default=False,
-        help="Use 8-bit quantization"
     )
     parser.add_argument(
         "--load_embeddings",
@@ -201,14 +195,6 @@ def parse_arguments():
              "If True, adjusted queries are further fused with new feedback on each turn."
     )
     return parser.parse_args()
-
-
-def bitsandbytes_8bit_config():
-    return BitsAndBytesConfig(
-        load_in_8bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-    )
 
 
 def rocchio_update(
@@ -391,10 +377,9 @@ def main():
     model_config = get_model_config(args.model_family, args.model_id)
     model = model_config["model_class"].from_pretrained(
         model_config["model_id"],
-        quantization_config=bitsandbytes_8bit_config() if args.use_8bit else None,
         trust_remote_code=True
     )
-    model = model.to(args.device) if not args.use_8bit else model
+    model = model.to(args.device)
     processor = model_config["processor_class"].from_pretrained(model_config["model_id"])
 
     # Initialize VLMWrapper

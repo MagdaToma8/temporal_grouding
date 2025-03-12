@@ -9,6 +9,12 @@ def load_json_file(file_path: str) -> Any:
         return json.load(file)
 
 
+def load_json_lines_file(file_path: str) -> Any:
+    with open(file_path, "r") as f:
+        data = [json.loads(line) for line in f]
+    return data
+
+
 def load_txt_file(file_path: str) -> List[str]:
     output = []
     with open(file_path, 'r') as file:

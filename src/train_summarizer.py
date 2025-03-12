@@ -11,7 +11,7 @@ from src.datasets.flickr import load_flickr_data
 from src.models.attentive_summarizer import AttentiveSummarizer, AlignmentAttentiveSummarizer
 from src.models.configs import get_model_config
 from src.utils.utils import load_yaml_file, generate_experiment_id
-from src.retrieval_pipeline import bitsandbytes_8bit_config
+from src.utils.quantization import bitsandbytes_8bit_config
 
 
 def parse_args():
