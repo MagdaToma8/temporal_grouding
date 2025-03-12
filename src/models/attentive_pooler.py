@@ -272,6 +272,7 @@ class CrossAttention(nn.Module):
         if self.use_sdpa:
             with torch.backends.cuda.sdp_kernel():
                 q = F.scaled_dot_product_attention(q, k, v)
+                xattn = None
         else:
             xattn = (q @ k.transpose(-2, -1)) * self.scale
             if mask is not None:

@@ -14,7 +14,8 @@ class AttentiveSummarizer(nn.Module):
     def __init__(
             self,
             pooler_config: Dict[str, Any],
-            text_dim: int,
+            text_dim_local: int,
+            text_dim_global: int,
             vision_dim: int,
             vlm_wrapper: Optional[VLMWrapper] = None,
             global_embeddings_vision: bool = False,
@@ -32,7 +33,7 @@ class AttentiveSummarizer(nn.Module):
             self.vlm_wrapper_model = vlm_wrapper.model
 
         self.text_projection = nn.Linear(
-            text_dim,
+            text_dim_global if global_embeddings_text else text_dim_local,
             pooler_config.get("embed_dim", 768)
         )
         self.vision_projection = nn.Linear(
@@ -50,7 +51,7 @@ class AttentiveSummarizer(nn.Module):
         )
         self.projection = nn.Linear(
             pooler_config.get("embed_dim", 768),
-            text_dim
+            text_dim_global
         )
 
         self.global_embeddings_vision = global_embeddings_vision
@@ -163,7 +164,6 @@ class AttentiveSummarizer(nn.Module):
 
         # print("Text-image features:", text_image_features.shape)
         x, xattn = self.pooler(q_features, text_image_features, mask=mask)
-        # print("Pooler output:", x.shape)
         x = self.projection(x[:, 0, :])
         return x, xattn
 
@@ -270,6 +270,9 @@ class AlignmentAttentiveSummarizer(LightningModule):
         loss = 0
         caption_loss_dict = self.criterion(q, gt)
         loss += caption_loss_dict["loss"] * 0.5
+        # For BLIP2, the image features are 3D with shape (bsz, num_q, text_dim)
+        if gt_image_features.ndim == 3 and gt_image_features.shape[1] != 1:
+            gt_image_features = gt_image_features.mean(dim=1)
         image_loss_dict = self.criterion(q, gt_image_features)
         loss += image_loss_dict["loss"] * 0.5
         with torch.no_grad():

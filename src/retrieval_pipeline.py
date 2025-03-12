@@ -9,7 +9,7 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from transformers import AutoProcessor
+from transformers import AutoProcessor, BitsAndBytesConfig
 import wandb
 
 from src.datasets.cub import load_cub_data
@@ -17,7 +17,6 @@ from src.datasets.flickr import load_flickr_data
 from src.models.vlm_wrapper import VLMWrapper
 from src.models.configs import get_model_config
 from src.models.attentive_summarizer import AttentiveSummarizer
-from src.run_inference_image import bitsandbytes_8bit_config
 from src.utils.metrics import RetrievalEvaluator, plot_metrics
 from src.utils.utils import load_yaml_file, load_json_file, generate_experiment_id
 
@@ -204,6 +203,14 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def bitsandbytes_8bit_config():
+    return BitsAndBytesConfig(
+        load_in_8bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+    )
+
+
 def rocchio_update(
         query_embeddings: torch.Tensor,
         avg_relevance_vector: torch.Tensor,
@@ -275,6 +282,7 @@ def get_embeddings_from_captions(
         captions: List[str],
         processor: AutoProcessor,
         vlm_wrapper: VLMWrapper,
+        cpu: bool = False
 ) -> torch.Tensor:
     """
     Get text embeddings from captions
@@ -295,7 +303,11 @@ def get_embeddings_from_captions(
 
     text_tokens = {k: v for k, v in tokenized_text.items() if k != 'pixel_values'} # remove dummy image inputs
 
-    tokenized_text = tokenized_text.to(vlm_wrapper.model.device)
+    if cpu:
+        vlm_wrapper.model = vlm_wrapper.model.to("cpu")
+    else:
+        tokenized_text = tokenized_text.to(vlm_wrapper.model.device)
+
     caption_embeddings = vlm_wrapper.get_embeddings(
         inputs=tokenized_text
     )
@@ -663,7 +675,7 @@ def main():
                         yolo_embeddings, _ = get_embeddings_from_captions(
                             captions=yolo_words,
                             processor=processor,
-                            vlm_wrapper=vlm_wrapper
+                            vlm_wrapper=vlm_wrapper,
                         )
                         yolo_embeddings = yolo_embeddings['text_embeds'].detach().cpu()
 
@@ -712,7 +724,8 @@ def main():
                     # Initialize summarizer model
                     summarizer = AttentiveSummarizer(
                         pooler_config=experiment_config["pooler_config"],
-                        text_dim=experiment_config["text_dim"],
+                        text_dim_local=experiment_config.get("text_dim_local", experiment_config.get("text_dim", 768)),
+                        text_dim_global=experiment_config.get("text_dim_global", experiment_config.get("text_dim", 768)),
                         vision_dim=experiment_config["vision_dim"],
                         vlm_wrapper=None,
                         global_embeddings_vision=experiment_config.get("global_embeddings_vision", True),

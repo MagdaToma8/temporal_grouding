@@ -83,7 +83,8 @@ def main():
     # Initialize summarizer model
     summarizer = AttentiveSummarizer(
         pooler_config=experiment_config["pooler_config"],
-        text_dim=experiment_config["text_dim"],
+        text_dim_local=experiment_config.get("text_dim_local", experiment_config.get("text_dim", 768)),
+        text_dim_global=experiment_config.get("text_dim_global", experiment_config.get("text_dim", 768)),
         vision_dim=experiment_config["vision_dim"],
         vlm_wrapper=vlm_wrapper,
         global_embeddings_vision=experiment_config.get("global_embeddings_vision", True),

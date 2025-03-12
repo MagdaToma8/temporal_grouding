@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from src.datasets.cub import load_cub_data
 from src.datasets.flickr import load_flickr_data
 from src.models.configs import get_model_config
-from src.run_inference_image import bitsandbytes_8bit_config
+from src.retrieval_pipeline import bitsandbytes_8bit_config
 from src.utils.utils import load_yaml_file
 
 
