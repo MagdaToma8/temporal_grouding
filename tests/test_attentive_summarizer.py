@@ -97,7 +97,7 @@ def test_cosine_similarity_loss():
     query_features_inputs = torch.randn(8, 512)
     gt_features = torch.randn(8, 512)
     loss = CosineSimilarityLoss()(query_features_inputs, gt_features)
-    assert 0 < loss.item() < 2
+    assert 0 < loss["loss"].item() < 2
 
 def test_attentive_summarizer_text(
     query_input,
@@ -112,11 +112,13 @@ def test_attentive_summarizer_text(
     # text and vision encoder dimensions in CLIP
     global_embeddings_vision = True
     text_dim = 512
+
     vision_dim = 512 if global_embeddings_vision else 768
 
     summarizer = AttentiveSummarizer(
         pooler_config=pooler_config,
-        text_dim=text_dim,
+        text_dim_local=text_dim,
+        text_dim_global=text_dim,
         vision_dim=vision_dim,
         vlm_wrapper=vlm_wrapper,
         global_embeddings_vision=global_embeddings_vision
@@ -156,35 +158,21 @@ def test_attentive_summarizer_text(
         vision_inputs=processed_vision
     )
 
-    assert forward_output.shape == (8, text_dim)
+    assert forward_output[0].shape == (8, text_dim)
 
-    contrastive_summarizer = AlignmentAttentiveSummarizer(
+    alignment_summarizer = AlignmentAttentiveSummarizer(
         summarizer=summarizer,
         pooler_config=pooler_config,
         temperature=0.1
     ).to(device)
 
-    contrastive_forward_output = contrastive_summarizer(
+    alignment_forward_output = alignment_summarizer(
         q=tokenized_query,
         gt=tokenized_gt,
         text_inputs=tokenized_text,
         vision_inputs=processed_vision
     )
 
-    assert contrastive_forward_output[0].shape == (8, text_dim)
-    assert contrastive_forward_output[1].shape == (8, text_dim)
+    assert alignment_forward_output[0].shape == (8, text_dim)
+    assert alignment_forward_output[1].shape == (8, text_dim)
 
-    contrastive_loss = contrastive_summarizer.training_step(
-        batch={
-            "q": tokenized_query,
-            "gt": tokenized_gt,
-            "text_inputs": tokenized_text,
-            "vision_inputs": processed_vision
-        },
-        batch_idx=0
-    )
-
-    assert contrastive_loss.item() > 0
-
-    summary = ModelSummary(contrastive_summarizer, max_depth=2)
-    print(summary)

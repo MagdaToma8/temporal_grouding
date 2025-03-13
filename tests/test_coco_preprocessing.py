@@ -4,13 +4,13 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoProcessor
 
-from src.datasets.flickr import FlickrDataset, FlickrDatasetSummarizer
-from src.datasets.data_collator import CaptioningDataCollator
-from src.datasets.flickr import FlickrDatasetSummarizerCollator
+from src.datasets.coco import COCODataset, COCODatasetSummarizer
+from src.datasets.data_collator import SummarizerDatasetCollator
+
 
 @pytest.fixture
 def data_dir():
-    return "data/flickr30k"
+    return "data/coco"
 
 
 @pytest.fixture
@@ -29,14 +29,11 @@ def topk():
 
 @pytest.fixture
 def dataset_generated_captions(data_dir, split, topk):
-    dataset = FlickrDatasetSummarizer(
+    dataset = COCODatasetSummarizer(
         data_dir=data_dir,
-        data_file=os.path.join(data_dir, "dataset_flickr30k.json"),
         split=split,
-        embeddings_path="embeddings/flickr30k/clip-vit-base-patch32/test",
+        embeddings_path="embeddings/coco/clip-vit-base-patch32/test",
         use_embeddings=False,
-        use_detected_objects=False,
-        use_classified_objects=False,
         use_generated_captions=True,
         topk=topk
     )
@@ -44,42 +41,38 @@ def dataset_generated_captions(data_dir, split, topk):
 
 
 def test_val_test_size(data_dir, split):
-    dataset = FlickrDataset(
+    dataset = COCODataset(
         data_dir=data_dir,
         split=split,
-        data_file=os.path.join(data_dir, "dataset_flickr30k.json")
     )
 
-    assert len(dataset) == 1000
+    assert len(dataset) == 5000
 
-    dataset = FlickrDataset(
+    dataset = COCODataset(
         data_dir=data_dir,
         split="val",
-        data_file=os.path.join(data_dir, "dataset_flickr30k.json")
     )
 
-    assert len(dataset) == 1014
+    assert len(dataset) == 5000
 
 
 def test_5_captions_per_image(data_dir, split):
-    dataset = FlickrDataset(
+    dataset = COCODataset(
         data_dir=data_dir,
         split=split,
-        data_file=os.path.join(data_dir, "dataset_flickr30k.json")
     )
 
     for i in range(len(dataset)):
         assert len([key for key in dataset[i].keys() if "caption" in key]) == 5
 
 
-def test_flickr_dataset_for_summarizer__generated_captions(dataset_generated_captions):
+def test_coco_dataset_for_summarizer__generated_captions(dataset_generated_captions):
     item = dataset_generated_captions.__getitem__(28)
     assert item["generated_text"] is not None
-    assert item["text_feedback"] is None
 
 
-def test_flickr_dataset_for_summarizer__collator_generated_captions(dataset_generated_captions, processor, topk):
-    dataset_collator = FlickrDatasetSummarizerCollator(
+def test_coco_dataset_for_summarizer__collator_generated_captions(dataset_generated_captions, processor, topk):
+    dataset_collator = SummarizerDatasetCollator(
         processor=processor,
         process_images=True
     )
