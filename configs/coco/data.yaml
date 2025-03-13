@@ -1,0 +1,2 @@
+data_dir: data/coco/
+num_captions_to_use: 5
