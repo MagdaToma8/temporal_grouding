@@ -19,11 +19,9 @@ python -m src.datasets.download_coco_karpathy_splits --output_dir data/coco/anno
 cd data
 wget http://images.cocodataset.org/zips/train2014.zip
 wget http://images.cocodataset.org/zips/val2014.zip
-wget http://images.cocodataset.org/zips/test2014.zip
 
 unzip train2014.zip -d coco/
 unzip val2014.zip -d coco/
-unzip test2014.zip -d coco/
 ```
 
 ## Retrieval pipeline

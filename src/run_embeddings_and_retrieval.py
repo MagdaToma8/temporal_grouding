@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 
 from src.datasets.cub import load_cub_data
 from src.datasets.flickr import load_flickr_data
+from src.datasets.coco import load_coco_data
 from src.models.configs import get_model_config
 from src.utils.quantization import bitsandbytes_8bit_config
 from src.utils.utils import load_yaml_file
@@ -113,6 +114,8 @@ def main():
         dataset, dataset_collator = load_cub_data(data_config, args.split, processor)
     elif args.dataset == "flickr":
         dataset, dataset_collator = load_flickr_data(data_config, args.split, processor)
+    elif args.dataset == "coco":
+        dataset, dataset_collator = load_coco_data(data_config, args.split, processor)
     else:
         raise ValueError(f"Dataset {args.dataset} not supported")
 

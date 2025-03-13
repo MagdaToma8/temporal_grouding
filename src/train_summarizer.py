@@ -8,6 +8,7 @@ from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
 
 from src.datasets.flickr import load_flickr_data
+from src.datasets.coco import load_coco_data
 from src.models.attentive_summarizer import AttentiveSummarizer, AlignmentAttentiveSummarizer
 from src.models.configs import get_model_config
 from src.utils.utils import load_yaml_file, generate_experiment_id
@@ -19,6 +20,7 @@ def parse_args():
     # config files
     parser.add_argument('--experiment_config', type=str, required=True)
     parser.add_argument('--data_config', type=str, required=True)
+    parser.add_argument('--dataset', type=str, default='flickr')
     # VLM model
     parser.add_argument('--model_family', type=str, required=True)
     parser.add_argument('--model_id', type=str, required=True)
@@ -53,18 +55,32 @@ def main():
 
     vlm_wrapper = model_config["wrapper_class"](model=base_model, processor=processor)
 
-    train_dataset, train_collator = load_flickr_data(
-        data_config,
-        'train',
-        processor,
-        summarizer=True
-    )
-    val_dataset, val_collator = load_flickr_data(
-        data_config,
-        'val',
-        processor,
-        summarizer=True
-    )
+    if args.dataset == 'flickr':
+        train_dataset, train_collator = load_flickr_data(
+            data_config,
+            'train',
+            processor,
+            summarizer=True
+        )
+        val_dataset, val_collator = load_flickr_data(
+            data_config,
+            'val',
+            processor,
+            summarizer=True
+        )
+    elif args.dataset == 'coco':
+        train_dataset, train_collator = load_coco_data(
+            data_config,
+            'train',
+            processor,
+            summarizer=True
+        )
+        val_dataset, val_collator = load_coco_data(
+            data_config,
+            'val',
+            processor,
+            summarizer=True
+        )
 
     train_loader = DataLoader(
         train_dataset,

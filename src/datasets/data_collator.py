@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional
 
+import numpy as np
 import torch
 from transformers import AutoProcessor
 
@@ -24,4 +25,148 @@ class ImageTextDataCollator:
             processed_batch['image'] = processed_img_text['pixel_values']
             processed_batch['input_ids'] = processed_img_text['input_ids']
             processed_batch['attention_mask'] = processed_img_text['attention_mask']
+        return processed_batch
+
+
+class CaptioningDataCollator:
+    def __init__(
+            self,
+            processor: AutoProcessor = None,
+            process_images: bool = True,
+            num_captions: int = 5,
+        ):
+        self.processor = processor
+        self.process_images = process_images
+        self.num_captions = num_captions
+
+    def __call__(self, batch):
+        processed_batch = {}
+
+        processed_batch['img_path'] = np.array([example['img_path'] for example in batch])
+        processed_batch['class_label'] = torch.tensor([example['class_label'] for example in batch])
+
+        if self.process_images and self.processor is not None:
+            processed_img_text = self.processor(
+                images=[example['image'] for example in batch],
+                text=[example[f"caption_{0}"] for example in batch],
+                return_tensors="pt",
+                padding=True
+            )
+            processed_batch['image'] = processed_img_text['pixel_values']
+        else:
+            processed_batch['image'] = [example['image'] for example in batch]
+
+        if self.processor is not None:
+            for i in range(self.num_captions):
+                processed_text = self.processor(
+                    text=[example[f"caption_{i}"] for example in batch],
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True
+                )
+                processed_batch[f"caption_{i}"] = processed_text['input_ids']
+                processed_batch[f'caption_{i}_attention_mask'] = processed_text['attention_mask']
+        return processed_batch
+
+
+class SummarizerDatasetCollator:
+    def __init__(self, processor=None, process_images=True):
+        self.processor = processor
+        self.process_images = process_images
+
+    def __call__(self, batch):
+        processed_batch = {}
+
+        # Process image paths and class labels
+        processed_batch['img_path'] = np.array([example['img_path'] for example in batch])
+        processed_batch['class_label'] = torch.tensor([example['class_label'] for example in batch])
+
+        # Process ground truth images
+        if self.process_images and self.processor is not None:
+            processed_images = self.processor(
+                images=[example['image'] for example in batch],
+                return_tensors="pt",
+                padding=True
+            )
+            processed_batch['image'] = processed_images['pixel_values']
+        else:
+            processed_batch['image'] = [example['image'] for example in batch]
+
+        # Process text fields
+        if self.processor is not None:
+            # Process query
+            processed_query = self.processor(
+                text=[example['query'] for example in batch],
+                return_tensors="pt",
+                padding=True,
+                truncation=True
+            )
+            processed_batch['query_input_ids'] = processed_query['input_ids']
+            processed_batch['query_attention_mask'] = processed_query['attention_mask']
+
+            # Process ground truth captions
+            processed_batch["num_ground_truth_captions"] = len(batch[0]["ground_truth"])
+            all_ground_truth_captions = []
+            # Flatten ground truth captions for each example along the batch dimension
+            # Shape for input_ids and ground_truth_attention_mask:
+            #   [bsz * (num_captions - 1), seq_len]
+            #   seq_len will be padded to the longest ground truth caption in the batch
+            for example in batch:
+                all_ground_truth_captions.extend(example["ground_truth"])
+            processed_ground_truth = self.processor(
+                text=all_ground_truth_captions,
+                return_tensors="pt",
+                padding=True,
+                truncation=True
+            )
+            processed_batch['ground_truth_input_ids'] = processed_ground_truth['input_ids']
+            processed_batch['ground_truth_attention_mask'] = processed_ground_truth['attention_mask']
+
+            # Process text feedback from yolo-based models
+            # Shape for input_ids and attention_mask:
+            #   [bsz, seq_len]
+            if example.get('text_feedback', None) and any(example['text_feedback'] for example in batch):
+                processed_text_feedback = self.processor(
+                    text=[' '.join(example['text_feedback']) for example in batch],
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True
+                )
+                processed_batch['text_feedback_input_ids'] = processed_text_feedback['input_ids']
+                processed_batch['text_feedback_attention_mask'] = processed_text_feedback['attention_mask']
+
+            # Process LLaVA-generated captions
+            # Flatten generated captions for each retrieved image in topk along the batch dimension
+            # Shape for input_ids and attention_mask:
+            #   [bsz * topk, seq_len]
+            #   seq_len will be padded to the longest generated caption in the batch
+            if any(example['generated_text'] for example in batch):
+                processed_batch["num_generated_captions"] = len(batch[0]['generated_text'])
+                all_generated_captions = []
+                for example in batch:
+                    all_generated_captions.extend(example['generated_text'])
+                processed_generated_text = self.processor(
+                    text=all_generated_captions,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True
+                )
+                processed_batch['generated_text_input_ids'] = processed_generated_text['input_ids']
+                processed_batch['generated_text_attention_mask'] = processed_generated_text['attention_mask']
+
+        # Process retrieval results images
+        # Flatten topk retrieved images along the batch dimension
+        # Shape for pixel_values:
+        #   [bsz * topk, 3, 224, 224]
+        if self.process_images and self.processor is not None:
+            retrieved_images = [img for example in batch for img in example['retrieval_results_images']]
+            processed_retrieval_images = self.processor(
+                images=retrieved_images,
+                return_tensors="pt",
+                padding=True
+            )
+            processed_batch['retrieval_results_images'] = processed_retrieval_images['pixel_values']
+        else:
+            processed_batch['retrieval_results_images'] = [example['retrieval_results_images'] for example in batch]
+
         return processed_batch

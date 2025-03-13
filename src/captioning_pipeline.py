@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 
 from src.datasets.cub import load_cub_data
 from src.datasets.flickr import load_flickr_data
+from src.datasets.coco import load_coco_data
 from src.models.configs import get_model_config
 from src.utils.quantization import bitsandbytes_8bit_config
 from src.utils.utils import load_yaml_file
@@ -18,7 +19,7 @@ def parse_arguments():
         "--dataset",
         type=str,
         required=True,
-        help="Dataset to use (cub/flickr)"
+        help="Dataset to use (cub/flickr/coco)"
     )
     parser.add_argument(
         "--data_config",
@@ -115,6 +116,8 @@ def main():
         dataset, dataset_collator = load_cub_data(data_config, args.split, processor, process_images=False)
     elif args.dataset == "flickr":
         dataset, dataset_collator = load_flickr_data(data_config, args.split, processor, process_images=False)
+    elif args.dataset == "coco":
+        dataset, dataset_collator = load_coco_data(data_config, args.split, processor, process_images=False)
     else:
         raise ValueError(f"Dataset {args.dataset} not supported")
 
@@ -151,7 +154,6 @@ def main():
 
     for i, batch in enumerate(tqdm(dataloader)):
         images = batch['image']
-        print(images)
         img_path_batch = batch['img_path']
 
         ## First turn
@@ -173,6 +175,7 @@ def main():
         generated_text_all = [text.replace("USER:  \n", "USER: <image>\n") for text in generated_text_all]
         refining_prompt = "</s>USER: Pay attention to the visual settings and details on the image. Write exactly one sentence under 10 words. ASSISTANT:"
         refined_prompts = [generated_text_all[i] + refining_prompt for i in range(len(images))]
+        print(img_path_batch)
         print(refined_prompts)
         processed_prompt = vlm_wrapper.process_inputs(
             apply_template=False,
