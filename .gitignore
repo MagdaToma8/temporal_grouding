@@ -178,3 +178,7 @@ ruff.toml
 wandb/
 yolo*.pt
 *.ipynb
+
+snellius_scripts/
+slurm_output_*.out
+*.zip

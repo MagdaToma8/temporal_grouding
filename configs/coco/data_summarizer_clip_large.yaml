@@ -1,0 +1,6 @@
+data_dir: data/coco/
+
+embeddings_path: "embeddings/coco/clip-vit-large-patch14/"
+topk: 5
+use_embeddings: True
+use_generated_captions: True
