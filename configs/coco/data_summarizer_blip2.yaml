@@ -1,0 +1,9 @@
+data_dir: data/coco/
+data_file: data/coco/dataset_coco.json
+
+embeddings_path: "embeddings/coco/blip2-itm-vit-g/"
+topk: 5
+use_embeddings: True
+use_detected_objects: False
+use_classified_objects: False
+use_generated_captions: True

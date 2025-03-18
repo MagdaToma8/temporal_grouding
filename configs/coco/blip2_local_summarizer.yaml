@@ -1,0 +1,16 @@
+pooler_config:
+    embed_dim: 256
+    num_heads: 16
+    mlp_ratio: 4.0
+    depth: 2
+global_embeddings_vision: False
+global_embeddings_text: False
+text_dim_local: 768
+text_dim_global: 256
+vision_dim: 1408
+
+learning_rate: 0.0003
+weight_decay: 0.01
+
+batch_size: 64
+max_epochs: 100
