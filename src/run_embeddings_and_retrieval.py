@@ -88,6 +88,12 @@ def parse_arguments():
         default="text_class_label",
         help="Text field used for retrieval"
     )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=None,
+        help="Chunk size for similarity computation"
+    )
     return parser.parse_args()
 
 def main():
@@ -185,12 +191,28 @@ def main():
     )
 
     for key in tqdm(text_embeddings.keys(), "Retrieval per caption:"):
-        # Compute similarity matrix between queries and images
-        logits_per_image = torch.matmul(image_embeddings, text_embeddings[key].t())
-        # Shape of image embeddings in BLIP-2: [num_images, n_q, dim] -- Q-former returns image representation as n_q tokens
-        # Select the most relevant image token (from n_q) for each query
-        if 'blip2' in args.model_family:
-            logits_per_image, _ = logits_per_image.max(dim=1) # [num_images, num_queries]
+        if args.chunk_size is not None:
+            logits_per_image_chunks = []
+
+            for start_idx in range(0, image_embeddings.size(0), args.chunk_size):
+                end_idx = min(start_idx + args.chunk_size, image_embeddings.size(0))
+                image_chunk = image_embeddings[start_idx:end_idx]
+                logits_chunk = torch.matmul(image_chunk, text_embeddings[key].t())
+                if 'blip2' in args.model_family:
+                    logits_chunk, _ = logits_chunk.max(dim=1) # [num_images, num_queries]
+                logits_per_image_chunks.append(logits_chunk)
+                print(logits_chunk.shape)
+
+            # Concatenate all chunks to form the complete similarity matrix
+            logits_per_image = torch.cat(logits_per_image_chunks, dim=0)
+            print(logits_per_image.shape)
+        else:
+            logits_per_image = torch.matmul(image_embeddings, text_embeddings[key].t())
+
+            # Shape of image embeddings in BLIP-2: [num_images, n_q, dim] -- Q-former returns image representation as n_q tokens
+            # Select the most relevant image token (from n_q) for each query
+            if 'blip2' in args.model_family:
+                logits_per_image, _ = logits_per_image.max(dim=1) # [num_images, num_queries]
         logits_per_text = logits_per_image.t() # [num_queries, num_images]
 
         sorted_indices = torch.argsort(logits_per_text, dim=1, descending=True)
