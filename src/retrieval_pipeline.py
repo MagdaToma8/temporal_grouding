@@ -723,11 +723,8 @@ def main():
                     summarizer.eval()
                     # Select top-k retrieved image embeddings and paths for each query
                     topk_indices = sorted_indices[:, :args.top_k_feedback]
-                    sorted_image_embeddings = image_embeddings[topk_indices]
-                    sorted_vision_embeddings = vision_model_outputs[topk_indices]
-                    topk_image_embeddings = sorted_image_embeddings[:, :args.top_k_feedback]
-                    topk_vision_embeddings = sorted_vision_embeddings[:, :args.top_k_feedback]
-                    topk_image_paths = sorted_img_paths[:, :args.top_k_feedback]
+                    topk_image_embeddings = image_embeddings[topk_indices]
+                    topk_vision_embeddings = vision_model_outputs[topk_indices]
                     topk_image_paths = sorted_img_paths[:, :args.top_k_feedback]
 
                     # Generate embeddings of AI-generated captions
@@ -735,7 +732,9 @@ def main():
                     captions_embeddings = []
                     tokenized_texts = []
                     topk_captions = []
-                    for _, img_paths_list in enumerate(tqdm(topk_image_paths, "Feedback from AI-generated captions")):
+                    for _, img_paths_list in enumerate(
+                        tqdm(topk_image_paths, "Getting embeddings of AI-generated captions")
+                    ):
                         captions = [generated_captions[os.path.basename(img_path)] for img_path in img_paths_list]
                         topk_captions.append(captions)
                         embeddings, tokenized_text = get_embeddings_from_captions(
@@ -749,7 +748,7 @@ def main():
                     captions_embeddings = torch.stack(captions_embeddings, dim=0)
 
                     relevance_vector_neg = torch.zeros_like(text_embeddings)
-                    relevance_vector_pos = []
+                    relevance_vector_pos = torch.zeros_like(text_embeddings)
                     attn_for_visualization = []
                     attn_for_visualization_indices = []
 
@@ -765,11 +764,12 @@ def main():
                             # Use summarizer to get query with feedback and cross-attention weights
                             #   summarized_vector will be used as positive relevance vector
                             #   xattn (cross-attention weights) will be used to compute negative relevance vector
-                            summarized_vector, xattn = summarizer(
-                                text_embeddings[j].unsqueeze(0),
-                                captions_embeddings[j].unsqueeze(0),
-                                topk_image_embeddings[j].unsqueeze(0)
-                            )
+                            with torch.no_grad():
+                                summarized_vector, xattn = summarizer(
+                                    text_embeddings[j].unsqueeze(0),
+                                    captions_embeddings[j].unsqueeze(0),
+                                    topk_image_embeddings[j].unsqueeze(0)
+                                )
 
                             # Get cross-attention weights for image and text tokens
                             image_tokens_start = xattn.shape[-1] - topk_image_embeddings[j].shape[0]
@@ -810,11 +810,12 @@ def main():
                         else:
                             # Use summarizer to get query with feedback and cross-attention weights
                             #   (from each patch and token)
-                            summarized_vector, xattn = summarizer(
-                                text_model_outputs[j].unsqueeze(0),
-                                captions_text_model_outputs[j].unsqueeze(0),
-                                topk_vision_embeddings[j].unsqueeze(0)
-                            )
+                            with torch.no_grad():
+                                summarized_vector, xattn = summarizer(
+                                    text_model_outputs[j].unsqueeze(0),
+                                    captions_text_model_outputs[j].unsqueeze(0),
+                                    topk_vision_embeddings[j].unsqueeze(0)
+                                )
                             xattn = xattn.squeeze()
 
                             # Get cross-attention weights for image and text tokens
@@ -883,7 +884,7 @@ def main():
                             ).squeeze()
 
                         # Append positive relevance vector and average negative relevance vectors for texts and images
-                        relevance_vector_pos.append(summarized_vector)
+                        relevance_vector_pos[j] = summarized_vector
                         relevance_vector_neg[j] = (neg_relevance_images + neg_relevance_texts) / 2
 
                     avg_relevance_vector = torch.cat(relevance_vector_pos, dim=0)
