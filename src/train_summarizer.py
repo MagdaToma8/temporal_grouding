@@ -137,7 +137,7 @@ def main():
 
     wandb_logger = WandbLogger(
         entity='sensor_har',
-        project='flickr-summarizer-training',
+        project=f'{args.dataset}-summarizer-training',
         name=log_id,
         config={
             **data_config,
