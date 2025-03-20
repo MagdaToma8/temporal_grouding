@@ -212,7 +212,9 @@ class AlignmentAttentiveSummarizer(LightningModule):
             learning_rate: float = 1e-4,
             weight_decay: float = 0.01,
             max_epochs: int = 100,
-            random_mask: bool = False
+            random_mask: bool = False,
+            no_image_loss: bool = False,
+            no_caption_loss: bool = False
     ):
         super().__init__()
         self.summarizer = summarizer
@@ -268,24 +270,34 @@ class AlignmentAttentiveSummarizer(LightningModule):
         )
         q, gt, _ = self(q, gt, text_inputs, vision_inputs)
         loss = 0
-        caption_loss_dict = self.criterion(q, gt)
-        loss += caption_loss_dict["loss"] * 0.5
+        outputs = {}
+
+        # Alignment loss with caption features
+        if not self.hparams.no_caption_loss:
+            caption_loss_dict = self.criterion(q, gt)
+            loss += caption_loss_dict["loss"] * 0.5
+            outputs[f"{split}/caption_loss"] = caption_loss_dict["loss"]
+            outputs[f"{split}/caption_batch_hits@1"] = caption_loss_dict["batch_hits@1"]
+
         # For BLIP2, the image features are 3D with shape (bsz, num_q, text_dim)
         if gt_image_features.ndim == 3 and gt_image_features.shape[1] != 1:
             gt_image_features = gt_image_features.mean(dim=1)
-        image_loss_dict = self.criterion(q, gt_image_features)
-        loss += image_loss_dict["loss"] * 0.5
+
+        # Alignment loss with image features
+        if not self.hparams.no_image_loss:
+            image_loss_dict = self.criterion(q, gt_image_features)
+            loss += image_loss_dict["loss"] * 0.5
+            outputs[f"{split}/image_loss"] = image_loss_dict["loss"]
+            outputs[f"{split}/image_batch_hits@1"] = image_loss_dict["batch_hits@1"]
+
+        # Loss and metrics for the original VLM model
         with torch.no_grad():
-            # Loss and metrics for the original VLM model
             baseline_loss_dict = self.criterion(q_global, gt_image_features)
-        return {
-            f"{split}/loss": loss,
-            f"{split}/caption_loss": caption_loss_dict["loss"],
-            f"{split}/image_loss": image_loss_dict["loss"],
-            f"{split}/caption_batch_hits@1": caption_loss_dict["batch_hits@1"],
-            f"{split}/image_batch_hits@1": image_loss_dict["batch_hits@1"],
-            f"{split}/baseline_batch_hits@1": baseline_loss_dict["batch_hits@1"],
-        }
+            outputs[f"{split}/baseline_batch_hits@1"] = baseline_loss_dict["batch_hits@1"]
+
+        outputs[f"{split}/loss"] = loss
+
+        return outputs
 
     def training_step(self, batch, batch_idx):
         step_outputs = self._shared_step(batch, batch_idx, split="train")

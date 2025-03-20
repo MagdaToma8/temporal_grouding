@@ -115,7 +115,9 @@ def main():
         learning_rate=args.learning_rate or experiment_config.get("learning_rate", 1e-4),
         weight_decay=args.weight_decay or experiment_config.get("weight_decay", 0.01),
         max_epochs=args.max_epochs or experiment_config.get("max_epochs", 100),
-        random_mask=experiment_config.get("random_mask", False)
+        random_mask=experiment_config.get("random_mask", False),
+        no_image_loss=experiment_config.get("no_image_loss", False),
+        no_caption_loss=experiment_config.get("no_caption_loss", False)
     )
 
     # Setup training
