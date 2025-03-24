@@ -1,6 +1,6 @@
-MODEL_FAMILY="clip"
-MODEL_ID="openai/clip-vit-base-patch32"
-for top_k_feedback in {1..10}; do
+MODEL_FAMILY="blip2-embeddings"
+MODEL_ID="Salesforce/blip2-itm-vit-g"
+for top_k_feedback in {5..10}; do
     for feedback_aggregation in images generated_captions; do
         python -m src.retrieval_pipeline \
             --dataset coco \

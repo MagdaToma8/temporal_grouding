@@ -1,5 +1,5 @@
-MODEL_FAMILY="clip"
-MODEL_ID="openai/clip-vit-base-patch32"
+MODEL_FAMILY="blip2-embeddings"
+MODEL_ID="Salesforce/blip2-itm-vit-g"
 
 for feedback_aggregation in None images generated_captions gt_user; do
     python -m src.retrieval_pipeline \
