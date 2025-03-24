@@ -887,7 +887,7 @@ def main():
                         relevance_vector_pos[j] = summarized_vector
                         relevance_vector_neg[j] = (neg_relevance_images + neg_relevance_texts) / 2
 
-                    avg_relevance_vector = torch.cat(relevance_vector_pos, dim=0)
+                    avg_relevance_vector = relevance_vector_pos
                     avg_relevance_vector = F.normalize(avg_relevance_vector, p=2, dim=-1)
 
                     avg_non_relevance_vector = relevance_vector_neg
