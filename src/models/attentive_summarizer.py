@@ -120,49 +120,65 @@ class AttentiveSummarizer(nn.Module):
 
         if self.vlm_wrapper is not None:
             q_features = self._get_text_features(q, global_embeddings=self.global_embeddings_text)
-            text_features = self._get_text_features(text_inputs, global_embeddings=self.global_embeddings_text)
-            vision_features = self._get_vision_features(vision_inputs, global_embeddings=self.global_embeddings_vision)
+            if text_inputs is not None:
+                text_features = self._get_text_features(text_inputs, global_embeddings=self.global_embeddings_text)
+            if vision_inputs is not None:
+                vision_features = self._get_vision_features(vision_inputs, global_embeddings=self.global_embeddings_vision)
         else:
             q_features = q
-            text_features = text_inputs
-            vision_features = vision_inputs
+            if text_inputs is not None:
+                text_features = text_inputs
+            if vision_inputs is not None:
+                vision_features = vision_inputs
 
         q_features = self.text_projection(q_features)
-        text_features = self.text_projection(text_features)
-        vision_features = self.vision_projection(vision_features)
+        if text_inputs is not None:
+            text_features = self.text_projection(text_features)
+        if vision_inputs is not None:
+            vision_features = self.vision_projection(vision_features)
 
         if q_features.ndim == 2:
             q_features = q_features.unsqueeze(1)
-        if text_features.ndim == 2:
+        if text_inputs is not None and text_features.ndim == 2:
             text_features = text_features.unsqueeze(1)
-        if vision_features.ndim == 2:
+        if vision_inputs is not None and vision_features.ndim == 2:
             vision_features = vision_features.unsqueeze(1)
 
         if self.random_mask and self.training:
-            topk = int(text_features.shape[0] // q_features.shape[0])
-            num_k_mask_text = random.randint(0, topk - 1)
-            num_k_mask_vision = random.randint(0, topk - 1)
-            top_k_mask_indices_text = torch.randperm(topk)[:num_k_mask_text]
-            top_k_mask_indices_vision = torch.randperm(topk)[:num_k_mask_vision]
+            if text_inputs is not None:
+                topk = int(text_features.shape[0] // q_features.shape[0])
+                num_k_mask_text = random.randint(0, topk - 1)
+                top_k_mask_indices_text = torch.randperm(topk)[:num_k_mask_text]
+                mask_text = torch.ones(q_features.shape[1] + 1, topk, text_features.shape[1])
+                mask_text[:, top_k_mask_indices_text, :] = 0
+                mask_text = mask_text.view(q_features.shape[1] + 1, -1)
+            if vision_inputs is not None:
+                topk = int(vision_features.shape[0] // q_features.shape[0])
+                num_k_mask_vision = random.randint(0, topk - 1)
+                top_k_mask_indices_vision = torch.randperm(topk)[:num_k_mask_vision]
+                mask_vision = torch.ones(q_features.shape[1] + 1, topk, vision_features.shape[1])
+                mask_vision[:, top_k_mask_indices_vision, :] = 0
+                mask_vision = mask_vision.view(q_features.shape[1] + 1, -1)
 
-            mask_text = torch.ones(q_features.shape[1] + 1, topk, text_features.shape[1])
-            mask_text[:, top_k_mask_indices_text, :] = 0
-            mask_vision = torch.ones(q_features.shape[1] + 1, topk, vision_features.shape[1])
-            mask_vision[:, top_k_mask_indices_vision, :] = 0
+            if text_inputs is not None and vision_features is not None:
+                mask = torch.cat([mask_text, mask_vision], dim=1).to(self.vlm_wrapper.model.device)
+            elif text_inputs is not None:
+                mask = mask_text
+            elif vision_inputs is not None:
+                mask = mask_vision
 
-            mask_text = mask_text.view(q_features.shape[1] + 1, -1)
-            mask_vision = mask_vision.view(q_features.shape[1] + 1, -1)
+        if text_inputs is not None:
+            text_features = text_features.view(q_features.shape[0], -1, text_features.shape[-1])
+        if vision_inputs is not None:
+            vision_features = vision_features.view(q_features.shape[0], -1, vision_features.shape[-1])
 
-            mask = torch.cat([mask_text, mask_vision], dim=1).to(self.vlm_wrapper.model.device)
+        if text_inputs is not None and vision_inputs is not None:
+            text_image_features = torch.cat([text_features, vision_features], dim=1)
+        elif text_inputs is not None:
+            text_image_features = text_features
+        elif vision_inputs is not None:
+            text_image_features = vision_features
 
-        text_features = text_features.view(q_features.shape[0], -1, text_features.shape[-1])
-        vision_features = vision_features.view(q_features.shape[0], -1, vision_features.shape[-1])
-        # print("Text features:", text_features.shape)
-        # print("Vision features:", vision_features.shape)
-
-        text_image_features = torch.cat([text_features, vision_features], dim=1)
-
-        # print("Text-image features:", text_image_features.shape)
         x, xattn = self.pooler(q_features, text_image_features, mask=mask)
         x = self.projection(x[:, 0, :])
         return x, xattn
@@ -221,7 +237,7 @@ class AlignmentAttentiveSummarizer(LightningModule):
         self.criterion = CosineSimilarityLoss()
         self.save_hyperparameters(ignore=["summarizer"])
 
-    def forward(self, q, gt, text_inputs, vision_inputs):
+    def forward(self, q, gt, text_inputs=None, vision_inputs=None):
         # Shapes:
         # q: (bsz, seq, text_dim) -- tokens or embeddings
         # text_inputs: (bsz, seq, text_dim) -- tokens or embeddings
@@ -244,19 +260,28 @@ class AlignmentAttentiveSummarizer(LightningModule):
             "input_ids": batch.get("ground_truth_input_ids"),
             "attention_mask": batch.get("ground_truth_attention_mask"),
         }
+
+        text_inputs = None
+        vision_inputs = None
+
         if batch.get("generated_text_input_ids") is not None:
             text_inputs = {
                 "input_ids": batch.get("generated_text_input_ids"),
                 "attention_mask": batch.get("generated_text_attention_mask"),
             }
-        else:
+        elif batch.get("text_feedback_input_ids") is not None:
             text_inputs = {
                 "input_ids": batch.get("text_feedback_input_ids"),
                 "attention_mask": batch.get("text_feedback_attention_mask"),
             }
-        vision_inputs = {
-            "pixel_values": batch.get("retrieval_results_images"),
-        }
+
+        if batch.get("retrieval_results_images") is not None:
+            vision_inputs = {
+                "pixel_values": batch.get("retrieval_results_images"),
+            }
+        else:
+            vision_inputs = None
+
         gt_image = {
             "pixel_values": batch.get("image"),
         }

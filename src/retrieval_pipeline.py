@@ -195,6 +195,12 @@ def parse_arguments():
              "If False, original queries are fused with new feedback on each turn."
              "If True, adjusted queries are further fused with new feedback on each turn."
     )
+    parser.add_argument(
+        "--summarizer_no_captions",
+        action="store_true",
+        default=False,
+        help="Use summarizer without generated captions"
+    )
     return parser.parse_args()
 
 
@@ -367,6 +373,8 @@ def main():
     project_suffix = ""
     if args.wandb_log_all_turns:
         project_suffix = "-log-all"
+    if args.rocchio_alpha != 0.8 or args.rocchio_beta != 0.1 or args.rocchio_gamma != 0.1:
+        project_suffix += "-ablation-rocchio"
     if not args.disable_wandb:
         wandb.init(
             project=f"multi-turn-retrieval{project_suffix}",
@@ -410,7 +418,7 @@ def main():
         cls_json_file = os.path.join(data_config["data_dir"], "yolo", "classification", f"{args.split}_yolo_text.json")
         classification_texts = load_json_file(cls_json_file)
 
-    if args.feedback_aggregation in ["generated_captions", "attentive_summarizer"]:
+    if args.feedback_aggregation in ["generated_captions", "attentive_summarizer", "attentive_summarizer_with_gt"]:
         generated_captions_file = os.path.join(data_config["data_dir"], "captions", f"captions_{args.split}.json")
         generated_captions = load_json_file(generated_captions_file)
 
@@ -422,7 +430,14 @@ def main():
     if args.feedback_aggregation is None:
         num_turns_dataloader = 1
         num_turns_feedback = 1
-    elif args.feedback_aggregation in ["gt_user", "yolo", "images", "generated_captions", "attentive_summarizer"]:
+    elif args.feedback_aggregation in [
+        "gt_user",
+        "yolo",
+        "images",
+        "generated_captions",
+        "attentive_summarizer",
+        "attentive_summarizer_with_gt"
+    ]:
         num_turns_dataloader = 1
         num_turns_feedback = args.num_turns
     # These feedback loops require re-calculating textual embeddings
@@ -515,16 +530,17 @@ def main():
 
                 # Quick evaluations the feedback quality using hits@1
                 # relevance feedback vector and ground truth image embeddings
-                relevance_image = torch.matmul(avg_relevance_vector, image_embeddings.t())
-                print((relevance_image.diag() - relevance_image.max(dim=1)[0] == 0).sum())
+                if "blip2" not in args.model_family:
+                    relevance_image = torch.matmul(avg_relevance_vector, image_embeddings.t())
+                    print((relevance_image.diag() - relevance_image.max(dim=1)[0] == 0).sum())
 
-                # original text query and image embeddings
-                orig_text_image = torch.matmul(orig_text_embeddings, image_embeddings.t())
-                print((orig_text_image.diag() - orig_text_image.max(dim=1)[0] == 0).sum())
+                    # original text query and image embeddings
+                    orig_text_image = torch.matmul(orig_text_embeddings, image_embeddings.t())
+                    print((orig_text_image.diag() - orig_text_image.max(dim=1)[0] == 0).sum())
 
-                # updated text query (with feedback) and image embeddings
-                text_image = torch.matmul(text_embeddings, image_embeddings.t())
-                print((text_image.diag() - text_image.max(dim=1)[0] == 0).sum())
+                    # updated text query (with feedback) and image embeddings
+                    text_image = torch.matmul(text_embeddings, image_embeddings.t())
+                    print((text_image.diag() - text_image.max(dim=1)[0] == 0).sum())
 
             # Retrieval logic:
             # Textual class labels are the queries, and the images are the candidates.
@@ -540,8 +556,8 @@ def main():
             )
 
             # for blip2, use averaged query embeddings as global representations
-            if 'blip2' in args.model_family:
-                image_embeddings = orig_image_embeddings.mean(dim=1)
+            # if 'blip2' in args.model_family:
+                # image_embeddings = orig_image_embeddings.transpose(0, 2, 1)
 
             # Sort similarities (logits) for each query in descending order
             sorted_indices = torch.argsort(logits_per_text, dim=1, descending=True)
@@ -608,10 +624,15 @@ def main():
             # Feedback aggregation logic
             if feedback_turn < num_turns_feedback - 1:
                 topk_image_paths = sorted_img_paths[:, :args.top_k_feedback]
+
+                # Original Rocchio uses the least relevant items to define negative feedback
                 if args.original_rocchio:
                     lastk_image_paths = sorted_img_paths[:, -args.top_k_feedback:]
-                # Aggregate image from top-k retrieved images using their similarity to intial query embeddings
+
+                # PRF: Aggregate image from top-k retrieved images
                 if args.feedback_aggregation == "images":
+                    if "blip2" in args.model_family:
+                        image_embeddings = image_embeddings.mean(dim=1)
                     topk_indices = sorted_indices[:, :args.top_k_feedback]
                     topk_image_embeddings = image_embeddings[topk_indices]
 
@@ -641,6 +662,7 @@ def main():
                             avg_non_relevance_vector[j] = F.normalize(avg_non_relevance_vector[j], p=2, dim=-1)
 
                 # Aggregate information from YOLO-based object detection and image classification
+                # Shows degrading performance
                 elif args.feedback_aggregation == "yolo":
                     # Select top-k image paths for each query
                     avg_relevance_vector = torch.zeros_like(text_embeddings)
@@ -674,7 +696,7 @@ def main():
                             temperature=args.temperature
                         )
 
-                # Aggregate information from AI-generated captions
+                # GRF: Aggregate information from AI-generated captions
                 elif args.feedback_aggregation == "generated_captions":
                     if args.original_rocchio:
                         topk_image_paths = np.concatenate([topk_image_paths, lastk_image_paths], axis=1)
@@ -704,8 +726,8 @@ def main():
                             avg_relevance_vector[j] = avg_pos_output
                             avg_non_relevance_vector[j] = avg_neg_output
 
-                # Attentive summarizer for feedback aggregation
-                elif args.feedback_aggregation == "attentive_summarizer":
+                # AFS: Attentive feedback summarizer for feedback aggregation from PRF and GRF
+                elif args.feedback_aggregation in ["attentive_summarizer", "attentive_summarizer_with_gt"]:
                     experiment_config = load_yaml_file(args.experiment_config)
                     assert experiment_config
 
@@ -732,25 +754,45 @@ def main():
                     captions_embeddings = []
                     tokenized_texts = []
                     topk_captions = []
-                    for _, img_paths_list in enumerate(
-                        tqdm(topk_image_paths, "Getting embeddings of AI-generated captions")
-                    ):
-                        captions = [generated_captions[os.path.basename(img_path)] for img_path in img_paths_list]
-                        topk_captions.append(captions)
-                        embeddings, tokenized_text = get_embeddings_from_captions(
-                            captions=captions,
-                            processor=processor,
-                            vlm_wrapper=vlm_wrapper
-                        )
-                        captions_text_model_outputs.append(embeddings['text_model_output'].detach().cpu())
-                        captions_embeddings.append(embeddings['text_embeds'].detach().cpu())
-                        tokenized_texts.append(tokenized_text)
-                    captions_embeddings = torch.stack(captions_embeddings, dim=0)
+
+                    if args.feedback_aggregation == "attentive_summarizer_with_gt":
+                        gt_captions = []
+                        for j, batch in enumerate(tqdm(dataloader, "Getting ground truth captions")):
+                            captions_keys = [f"caption_{c}" for c in range(dataset.num_captions_to_use)]
+                            captions_keys = [cap for cap in captions_keys if cap != args.text_from]
+                            captions_keys = random.sample(captions_keys, 1)
+                            gt_caption_text = processor.tokenizer.batch_decode(
+                                batch[captions_keys[0]],
+                                skip_special_tokens=True
+                            )
+                            gt_captions.extend([caption.strip().capitalize() for caption in gt_caption_text])
+                    if not args.summarizer_no_captions:
+                        for i, img_paths_list in enumerate(
+                            tqdm(topk_image_paths, "Getting embeddings of AI-generated captions")
+                        ):
+                            if args.feedback_aggregation == "attentive_summarizer_with_gt":
+                                captions = [gt_captions[i]]
+                            else:
+                                captions = [generated_captions[os.path.basename(img_path)] for img_path in img_paths_list]
+                            topk_captions.append(captions)
+                            embeddings, tokenized_text = get_embeddings_from_captions(
+                                captions=captions,
+                                processor=processor,
+                                vlm_wrapper=vlm_wrapper
+                            )
+                            captions_text_model_outputs.append(embeddings['text_model_output'].detach().cpu())
+                            captions_embeddings.append(embeddings['text_embeds'].detach().cpu())
+                            tokenized_texts.append(tokenized_text)
+                        captions_embeddings = torch.stack(captions_embeddings, dim=0)
 
                     relevance_vector_neg = torch.zeros_like(text_embeddings)
                     relevance_vector_pos = torch.zeros_like(text_embeddings)
                     attn_for_visualization = []
                     attn_for_visualization_indices = []
+
+                    num_text_items = 1 if (
+                        args.feedback_aggregation == "attentive_summarizer_with_gt"
+                    ) else args.top_k_feedback
 
                     for j in tqdm(
                         range(0, text_embeddings.shape[0]),
@@ -767,7 +809,7 @@ def main():
                             with torch.no_grad():
                                 summarized_vector, xattn = summarizer(
                                     text_embeddings[j].unsqueeze(0),
-                                    captions_embeddings[j].unsqueeze(0),
+                                    captions_embeddings[j].unsqueeze(0) if not args.summarizer_no_captions else None,
                                     topk_image_embeddings[j].unsqueeze(0)
                                 )
 
@@ -782,7 +824,7 @@ def main():
                                 xattn_text
                                 .sum(dim=1)
                                 .sum(dim=1)
-                                .view(args.top_k_feedback, -1)
+                                .view(num_text_items, -1)
                             )
                             xattn_image_sum = (
                                 xattn_image
@@ -813,7 +855,9 @@ def main():
                             with torch.no_grad():
                                 summarized_vector, xattn = summarizer(
                                     text_model_outputs[j].unsqueeze(0),
-                                    captions_text_model_outputs[j].unsqueeze(0),
+                                    captions_text_model_outputs[j].unsqueeze(0) if (
+                                        not args.summarizer_no_captions
+                                    ) else None,
                                     topk_vision_embeddings[j].unsqueeze(0)
                                 )
                             xattn = xattn.squeeze()
@@ -825,7 +869,7 @@ def main():
                             image_tokens_start = xattn.shape[-1] - \
                                 (topk_vision_embeddings[j].shape[1] * args.top_k_feedback)
 
-                            xattn_text = xattn[..., :image_tokens_start]
+                            xattn_text = xattn[..., :image_tokens_start] if not args.summarizer_no_captions else None
                             xattn_image = xattn[..., image_tokens_start:]
 
                             if random.random() < args.visualize_attention_ratio:
@@ -833,16 +877,18 @@ def main():
                                 query = processor.tokenizer.decode(captions_input_ids[j], skip_special_tokens=True)
                                 img_path = img_paths[j]
                                 topk_img_paths = topk_image_paths[j]
-                                tokens = tokenized_texts[j]['input_ids'].flatten()
-                                tokens = processor.tokenizer.convert_ids_to_tokens(tokens)
                                 attn_per_patch = xattn_image.sum(dim=0).sum(dim=0).reshape(args.top_k_feedback, -1)
-                                attn_per_token = xattn_text.sum(dim=0).sum(dim=0)
-                                attn_per_token_zip = list(zip(tokens, attn_per_token))
-                                attn_per_token_zip = [
-                                    (x[0].replace("</w>", ""), x[1].item())
-                                    for x in attn_per_token_zip
-                                    if "</w>" in x[0]
-                                ]
+
+                                if not args.summarizer_no_captions:
+                                    tokens = tokenized_texts[j]['input_ids'].flatten()
+                                    tokens = processor.tokenizer.convert_ids_to_tokens(tokens)
+                                    attn_per_token = xattn_text.sum(dim=0).sum(dim=0)
+                                    attn_per_token_zip = list(zip(tokens, attn_per_token))
+                                    attn_per_token_zip = [
+                                        (x[0].replace("</w>", ""), x[1].item())
+                                        for x in attn_per_token_zip
+                                        if "</w>" in x[0]
+                                    ]
                                 similarities = torch.matmul(
                                     topk_image_embeddings[j],
                                     text_embeddings[j].unsqueeze(0).T
@@ -858,34 +904,61 @@ def main():
 
                             # Sum cross-attention weights along attention heads and output tokens
                             #   (<CLS>, query_token1, query_token2, ...)
-                            xattn_text_sum = (
-                                xattn_text.sum(dim=0).sum(dim=0)
-                                .reshape(args.top_k_feedback, -1)
-                                .sum(dim=1)
-                            ).unsqueeze(0)
+                            if xattn_text is not None:
+                                xattn_text_sum = (
+                                    xattn_text.sum(dim=0).sum(dim=0)
+                                    .reshape(num_text_items, -1)
+                                    .sum(dim=1)
+                                ).unsqueeze(0)
+
+                                # Compute softmax of aggregated cross-attention weights
+                                # -xattn_text_sum is used to get NEGATIVE relevance
+                                xattn_text_softmax = F.softmax((-xattn_text_sum) / args.temperature, dim=0)
+                                neg_relevance_texts = torch.sum(
+                                    captions_embeddings[j] * xattn_text_softmax.unsqueeze(-1),
+                                    dim=1
+                                ).squeeze()
+                            else:
+                                neg_relevance_texts = None
+
                             xattn_image_sum = (
                                 xattn_image.sum(dim=0).sum(dim=0)
                                 .reshape(args.top_k_feedback, -1)
                                 .sum(dim=1)
                             ).unsqueeze(0)
 
-                            # Compute softmax of aggregated cross-attention weights
-                            # (1-xattn_text_sum) is used to get NEGATIVE relevance
-                            xattn_text_softmax = F.softmax((-xattn_text_sum) / args.temperature, dim=0)
                             xattn_image_softmax = F.softmax((-xattn_image_sum) / args.temperature, dim=0)
 
-                            neg_relevance_images = torch.sum(
-                                topk_image_embeddings[j] * xattn_image_softmax.unsqueeze(-1),
-                                dim=1
-                            ).squeeze()
-                            neg_relevance_texts = torch.sum(
-                                captions_embeddings[j] * xattn_text_softmax.unsqueeze(-1),
-                                dim=1
-                            ).squeeze()
+                            # For BLIP-2, we use the max similarity
+                            #   across the first dimension (learnable queries in Q-Former)
+                            #   to get the negative relevance vector
+                            if "blip2" in args.model_family:
+                                logits_per_image = torch.matmul(
+                                    topk_image_embeddings[j],
+                                    text_embeddings[j].unsqueeze(0).T
+                                )
+                                logits_per_image, max_idx = logits_per_image.max(dim=1)
+                                img_embeddings_max = topk_image_embeddings[
+                                    j,
+                                    torch.arange(topk_image_embeddings[j].shape[0]),
+                                    max_idx.squeeze()
+                                ]
+                                neg_relevance_images = torch.sum(
+                                    img_embeddings_max * xattn_image_softmax.unsqueeze(-1),
+                                    dim=1
+                                ).squeeze()
+                            else:
+                                neg_relevance_images = torch.sum(
+                                    topk_image_embeddings[j] * xattn_image_softmax.unsqueeze(-1),
+                                    dim=1
+                                ).squeeze()
 
                         # Append positive relevance vector and average negative relevance vectors for texts and images
                         relevance_vector_pos[j] = summarized_vector
-                        relevance_vector_neg[j] = (neg_relevance_images + neg_relevance_texts) / 2
+                        if neg_relevance_texts is not None:
+                            relevance_vector_neg[j] = (neg_relevance_images + neg_relevance_texts) / 2
+                        else:
+                            relevance_vector_neg[j] = neg_relevance_images
 
                     avg_relevance_vector = relevance_vector_pos
                     avg_relevance_vector = F.normalize(avg_relevance_vector, p=2, dim=-1)
@@ -905,7 +978,7 @@ def main():
                         with open(os.path.join(attn_save_path, 'attn_for_visualization.pkl'), 'wb') as f:
                             pickle.dump(attn_for_visualization, f)
 
-                # Simulate explicit user feedback by providing more ground truth captions
+                # Explicit user feedback with additional ground truth captions
                 elif args.feedback_aggregation == "gt_user":
                     avg_relevance_vector = torch.zeros_like(text_embeddings)
                     for j, batch in enumerate(tqdm(dataloader, "Explicit user feedback")):
