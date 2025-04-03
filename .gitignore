@@ -173,6 +173,7 @@ checkpoints/
 data/
 embeddings
 results/
+src/notebooks
 ruff.toml
 .ruff_cache/
 wandb/
