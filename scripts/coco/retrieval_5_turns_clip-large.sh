@@ -29,7 +29,7 @@ python -m src.retrieval_pipeline \
     --num_turns 5 \
     --top_k_feedback 5 \
     --feedback_aggregation attentive_summarizer \
-    --experiment_config configs/coco/clip_large_local_summarizer.yaml \
-    --summarizer_checkpoint checkpoints/clip-vit-large-patch14-2025-03-16_19_14_33_490377/epoch=19-val_loss=0.33.ckpt \
+    --experiment_config configs/coco/clip_large_local_summarizer_nocaploss.yaml \
+    --summarizer_checkpoint checkpoints/clip-vit-large-patch14-2025-03-24_15_09_55_874696/epoch=19-val_loss=0.08.ckpt \
     --wandb_log_all_turns \
     --accumulate_feedback;
