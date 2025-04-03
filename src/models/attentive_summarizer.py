@@ -306,7 +306,10 @@ class AlignmentAttentiveSummarizer(LightningModule):
 
         # For BLIP2, the image features are 3D with shape (bsz, num_q, text_dim)
         if gt_image_features.ndim == 3 and gt_image_features.shape[1] != 1:
-            gt_image_features = gt_image_features.mean(dim=1)
+            logits_per_image = torch.matmul(gt_image_features, q_global.t())
+            logits_per_image, max_idx = logits_per_image.max(dim=1)
+            max_idx = max_idx.diag()
+            gt_image_features = gt_image_features[torch.arange(gt_image_features.shape[0]), max_idx, :]
 
         # Alignment loss with image features
         if not self.hparams.no_image_loss:
