@@ -33,18 +33,9 @@ MODEL_ID="Salesforce/blip2-itm-vit-g"
 python -m src.run_embeddings_and_retrieval \
     --model_family $MODEL_FAMILY \
     --model_id $MODEL_ID \
-<<<<<<< Updated upstream
-    --batch_size 5 \
-=======
     --batch_size 10 \
->>>>>>> Stashed changes
     --dataset $DATASET \
     --data_config $DATA_CONFIG \
     --embeddings_dir $EMBEDDINGS_DIR/train \
     --split train \
-<<<<<<< Updated upstream
-    --debug \
-    --chunk_size 50;
-=======
     --chunk_size 1000;
->>>>>>> Stashed changes
