@@ -442,6 +442,7 @@ def main():
         num_turns_feedback = args.num_turns
     # These feedback loops require re-calculating textual embeddings
     # The feedback is applied directly to query text
+    # This is not the case for any of the feedback loops in the paper
     else:
         num_turns_dataloader = args.num_turns
         num_turns_feedback = 1
@@ -555,10 +556,6 @@ def main():
                 blip2='blip2' in args.model_family
             )
 
-            # for blip2, use averaged query embeddings as global representations
-            # if 'blip2' in args.model_family:
-                # image_embeddings = orig_image_embeddings.transpose(0, 2, 1)
-
             # Sort similarities (logits) for each query in descending order
             sorted_indices = torch.argsort(logits_per_text, dim=1, descending=True)
             sorted_img_paths = img_paths[sorted_indices]
@@ -662,7 +659,7 @@ def main():
                             avg_non_relevance_vector[j] = F.normalize(avg_non_relevance_vector[j], p=2, dim=-1)
 
                 # Aggregate information from YOLO-based object detection and image classification
-                # Shows degrading performance
+                # This experiment shows degrading performance and was not included in the paper
                 elif args.feedback_aggregation == "yolo":
                     # Select top-k image paths for each query
                     avg_relevance_vector = torch.zeros_like(text_embeddings)
@@ -1008,7 +1005,8 @@ def main():
                     raise ValueError(f"Invalid feedback aggregation method: {args.feedback_aggregation}. "
                                      "Retrieval is done without feedback.")
 
-    wandb.finish()
+    if not args.disable_wandb:
+        wandb.finish()
 
 if __name__ == "__main__":
     main()

@@ -130,20 +130,6 @@ def main():
     captions = []
     img_paths = []
 
-    # prompt_pool = [
-    #     "Describe only the bird's appearance in less than 10 words.",
-    #     "Generate a short caption, less than 10 words, focusing on the bird's visual details.",
-    #     "Provide a concise description of the bird's colors, shape, and patterns.",
-    #     "Write a brief caption, less than 10 words, that describes the bird's physical features.",
-    #     "Summarize the bird's visual traits in a precise caption, less than 10 words."
-    # ]
-    # prompt_pool_beyond_bird = [
-    #     "Describe image with the bird in less than 10 words.",
-    #     "Generate a short caption, describing the bird and environment in less than 10 words.",
-    #     "Provide a concise description of the bird's colors, shape, and patterns and surroundings.",
-    #     "Write a brief caption, less than 10 words, that describes the bird's physical features and actions.",
-    #     "Summarize the bird's visual traits in a precise caption, less than 10 words."
-    # ]
     prompt_pool = [
         "Describe the image and main visual features one sentence.",
         "Generate a short caption for this image, focusing on the visual details.",
