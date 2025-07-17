@@ -1,7 +1,7 @@
 # Text-to-image retrieval with relevance feedback
 
 This is an official implementation of the paper:
-*"A Little More Like This: Evaluating Efficient Text-to-Image Retrieval in Vision-Language Models Using Relevance Feedback"*
+*"A Little More Like This: Text-to-Image Retrieval with Vision-Language Models Using Relevance Feedback"*
 
 ## Getting started
 
