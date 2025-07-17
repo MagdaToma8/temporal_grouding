@@ -5,9 +5,13 @@ import random
 from typing import Optional, List, Tuple
 
 import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
+from torchmetrics.functional import pairwise_cosine_similarity
 from torch.utils.data import DataLoader
 from transformers import AutoProcessor
 import wandb
@@ -89,6 +93,12 @@ def parse_arguments():
         type=str,
         default=None,
         help="Save embeddings to file"
+    )
+    parser.add_argument(
+        "--embedding_analysis",
+        action="store_true",
+        default=False,
+        help="Analyze AFS embeddings: pca, similarities"
     )
     parser.add_argument(
         "--summarizer_checkpoint",
@@ -910,7 +920,11 @@ def main():
 
                                 # Compute softmax of aggregated cross-attention weights
                                 # -xattn_text_sum is used to get NEGATIVE relevance
-                                xattn_text_softmax = F.softmax((-xattn_text_sum) / args.temperature, dim=0)
+                                xattn_text_softmax = F.softmax(
+                                    (-xattn_text_sum) / args.temperature,
+                                    dim=1
+                                )
+
                                 neg_relevance_texts = torch.sum(
                                     captions_embeddings[j] * xattn_text_softmax.unsqueeze(-1),
                                     dim=1
@@ -924,7 +938,7 @@ def main():
                                 .sum(dim=1)
                             ).unsqueeze(0)
 
-                            xattn_image_softmax = F.softmax((-xattn_image_sum) / args.temperature, dim=0)
+                            xattn_image_softmax = F.softmax((-xattn_image_sum) / args.temperature, dim=1)
 
                             # For BLIP-2, we use the max similarity
                             #   across the first dimension (learnable queries in Q-Former)
@@ -958,10 +972,94 @@ def main():
                             relevance_vector_neg[j] = neg_relevance_images
 
                     avg_relevance_vector = relevance_vector_pos
+
                     avg_relevance_vector = F.normalize(avg_relevance_vector, p=2, dim=-1)
 
                     avg_non_relevance_vector = relevance_vector_neg
                     avg_non_relevance_vector = F.normalize(avg_non_relevance_vector, p=2, dim=-1)
+
+                    if args.embedding_analysis:
+                        cos_rel_text = pairwise_cosine_similarity(avg_relevance_vector, text_embeddings)
+                        cos_rel_img = pairwise_cosine_similarity(avg_relevance_vector, image_embeddings)
+                        cos_img_text = pairwise_cosine_similarity(image_embeddings, text_embeddings)
+                        print(f"Relevance-Text (positive): {cos_rel_text.diag().mean():.4f}")
+                        print(f"Relevance-Image (positive): {cos_rel_img.diag().mean():.4f}")
+                        print(f"Image-Text (positive): {cos_img_text.diag().mean():.4f}")
+
+                        # Get non-diagonal similarities
+                        cos_rel_text_nondiag = cos_rel_text.clone()
+                        cos_rel_text_nondiag.fill_diagonal_(0)
+                        cos_rel_img_nondiag = cos_rel_img.clone()
+                        cos_rel_img_nondiag.fill_diagonal_(0)
+                        cos_img_text_nondiag = cos_img_text.clone()
+                        cos_img_text_nondiag.fill_diagonal_(0)
+
+                        print(f"Relevance-Text (negative): {cos_rel_text_nondiag.mean():.4f}")
+                        print(f"Relevance-Image (negative): {cos_rel_img_nondiag.mean():.4f}")
+                        print(f"Image-Text (negative): {cos_img_text_nondiag.mean():.4f}")
+
+                        labels_vector = ["query"] * text_embeddings.shape[0] + \
+                            ["image"] * image_embeddings.shape[0] + \
+                            ["relevance"] * avg_relevance_vector.shape[0]
+
+                        def pca(X, n_components=2):
+                            X = X - np.mean(X, axis=0)
+                            U, S, Vt = np.linalg.svd(X)
+                            return np.dot(X, Vt[:n_components].T)
+
+                        all_features = torch.cat(
+                            [
+                                text_embeddings,
+                                image_embeddings,
+                                avg_relevance_vector,
+                            ], dim=0).cpu().numpy()
+
+                        features_2d = pca(all_features, n_components=2)
+                        label_to_color = {"query": "orange", "image": "blue", "relevance": "green"}
+
+                        # Prepare DataFrame
+                        df = pd.DataFrame({
+                            "x": features_2d[:, 0],
+                            "y": features_2d[:, 1],
+                            "label": labels_vector
+                        })
+
+                        plt.figure(figsize=(6, 6))
+                        sns.scatterplot(data=df, x="x", y="y", hue="label", palette=label_to_color, alpha=0.5)
+                        # n_text = text_embeddings.shape[0]
+                        # n_image = image_embeddings.shape[0]
+                        # # Connect text and image points if paired
+                        # for i in range(min(n_text, n_image)):
+                        #     # Connect text and image points
+                        #     plt.plot(
+                        #         [features_2d[i, 0], features_2d[n_text + i, 0]],
+                        #         [features_2d[i, 1], features_2d[n_text + i, 1]],
+                        #         c='black', alpha=0.01
+                        #     )
+                        #     # Connect text and relevance points 
+                        #     plt.plot(
+                        #         [features_2d[i, 0], features_2d[n_text + n_image + i, 0]],
+                        #         [features_2d[i, 1], features_2d[n_text + n_image + i, 1]], 
+                        #         c='orange', alpha=0.01
+                        #     )
+                        #     # Connect image and relevance points
+                        #     plt.plot(
+                        #         [features_2d[n_text + i, 0], features_2d[n_text + n_image + i, 0]],
+                        #         [features_2d[n_text + i, 1], features_2d[n_text + n_image + i, 1]],
+                        #         c='orange', alpha=0.01
+                        #     )
+                        plt.legend(title=None, loc="upper right", fontsize=14)
+                        plt.xlabel("Component 1", fontsize=14)
+                        plt.ylabel("Component 2", fontsize=14) 
+                        plt.xticks([])
+                        plt.yticks([])
+                        plt.savefig(f"pca_res_{args.summarizer_checkpoint.split('/')[1]}.png", bbox_inches='tight')
+                        plt.show()
+
+                        print("Non-diagonal similarities:")
+                        print(f"Relevance-Text: {cos_rel_text_nondiag.sum() / (cos_rel_text_nondiag != 0).sum():.4f}")
+                        print(f"Relevance-Image: {cos_rel_img_nondiag.sum() / (cos_rel_img_nondiag != 0).sum():.4f}")
+                        print(f"Image-Text: {cos_img_text_nondiag.sum() / (cos_img_text_nondiag != 0).sum():.4f}")
 
                     if attn_for_visualization:
                         attn_save_path = os.path.join(
