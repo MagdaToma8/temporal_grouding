@@ -399,18 +399,27 @@ def main():
         trust_remote_code=True
     )
     model = model.to(args.device)
+    print(model_config)
     processor = model_config["processor_class"].from_pretrained(model_config["model_id"])
 
     # Initialize VLMWrapper
     vlm_wrapper = model_config["wrapper_class"](model=model, processor=processor)
 
-    # Initialize dataset and dataloader
-    if args.dataset == "cub":
-        dataset, dataset_collator = load_cub_data(data_config, args.split, processor)
-    elif args.dataset == "flickr":
-        dataset, dataset_collator = load_flickr_data(data_config, args.split, processor)
+    # Initialize dataset and dataloader)
+    if args.dataset == "flickr":
+        dataset, dataset_collator = load_flickr_data(
+            data_config,
+            args.split,
+            processor,
+            siglip2=True if args.model_family == "siglip2" else False
+        )
     elif args.dataset == "coco":
-        dataset, dataset_collator = load_coco_data(data_config, args.split, processor)
+        dataset, dataset_collator = load_coco_data(
+            data_config,
+            args.split,
+            processor,
+            siglip2=True if args.model_family == "siglip2" else False
+        )
     else:
         raise ValueError(f"Dataset {args.dataset} not supported")
 
@@ -485,7 +494,10 @@ def main():
                 img_path_batch = batch['img_path']
 
                 input_ids = batch[args.text_from].to(args.device)
-                attention_mask = batch[f"{args.text_from}_attention_mask"].to(args.device)
+                if batch[f"{args.text_from}_attention_mask"] is not None:
+                    attention_mask = batch[f"{args.text_from}_attention_mask"].to(args.device)
+                else:
+                    attention_mask = None
 
                 outputs = vlm_wrapper.get_embeddings(inputs={
                     'pixel_values': images,

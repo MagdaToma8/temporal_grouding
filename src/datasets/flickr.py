@@ -13,7 +13,7 @@ from src.datasets.data_collator import CaptioningDataCollator, SummarizerDataset
 FLICKR_NUM_ALL_CAPTIONS = 5
 
 
-def load_flickr_data(config, split, processor, process_images=True, summarizer=False):
+def load_flickr_data(config, split, processor, process_images=True, summarizer=False, siglip2=False):
     assert split in ["train", "val", "test"]
 
     data_dir = config.get("data_dir", None)
@@ -55,6 +55,7 @@ def load_flickr_data(config, split, processor, process_images=True, summarizer=F
         collator = SummarizerDatasetCollator(
             processor=processor,
             process_images=process_images,
+            siglip2=siglip2
         )
 
     else:
@@ -69,7 +70,8 @@ def load_flickr_data(config, split, processor, process_images=True, summarizer=F
         collator = CaptioningDataCollator(
             processor=processor,
             process_images=process_images,
-            num_captions=num_captions_to_use
+            num_captions=num_captions_to_use,
+            siglip2=siglip2
         )
 
     return dataset, collator

@@ -7,6 +7,7 @@ from transformers import (
     Blip2ForImageTextRetrieval,
     CLIPModel,
     LlavaForConditionalGeneration,
+    SiglipModel,
 )
 
 from src.models.blip2 import (
@@ -18,6 +19,7 @@ from src.models.blip2 import (
 from src.models.clip import CLIPWrapper
 from src.models.llava import LLaVaWrapper
 from src.models.jinaclip import JinaVLMWrapper, JinaProcessor
+from src.models.siglip2 import SigLip2Wrapper
 
 CONFIGS = {
     "blip2": {
@@ -61,6 +63,12 @@ CONFIGS = {
         "model_class": AutoModel,
         "processor_class": JinaProcessor,
         "wrapper_class": JinaVLMWrapper,
+    },
+    "siglip2": {
+        "model_id": "google/siglip2-base-patch16-224",
+        "model_class": SiglipModel,
+        "processor_class": AutoProcessor,
+        "wrapper_class": SigLip2Wrapper,
     }
 }
 

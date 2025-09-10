@@ -12,7 +12,7 @@ from src.datasets.data_collator import CaptioningDataCollator, SummarizerDataset
 COCO_NUM_ALL_CAPTIONS = 5
 
 
-def load_coco_data(config, split, processor, process_images=True, summarizer=False):
+def load_coco_data(config, split, processor, process_images=True, summarizer=False, siglip2=False):
     assert split in ["train", "val", "test"]
 
     data_dir = config.get("data_dir", None)
@@ -46,6 +46,7 @@ def load_coco_data(config, split, processor, process_images=True, summarizer=Fal
         collator = SummarizerDatasetCollator(
             processor=processor,
             process_images=process_images,
+            siglip2=siglip2
         )
 
     else:
@@ -59,7 +60,8 @@ def load_coco_data(config, split, processor, process_images=True, summarizer=Fal
         collator = CaptioningDataCollator(
             processor=processor,
             process_images=process_images,
-            num_captions=num_captions_to_use
+            num_captions=num_captions_to_use,
+            siglip2=siglip2
         )
 
     return dataset, collator
@@ -104,7 +106,7 @@ class COCODataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        image = Image.open(item["image_path"])
+        image = Image.open(item["image_path"]).convert("RGB")
         if self.transform is not None:
             image = self.transform(image)
         if self.num_captions_to_use < len(item["captions"]):
@@ -203,7 +205,7 @@ class COCODatasetSummarizer(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        image = Image.open(item["image_path"])
+        image = Image.open(item["image_path"]).convert("RGB")
         if self.transform is not None:
             image = self.transform(image)
 
@@ -222,7 +224,7 @@ class COCODatasetSummarizer(Dataset):
         ]
         retrieval_results_images = []
         for img_path in retrieval_results_img_paths:
-            retrieved_image = Image.open(img_path)
+            retrieved_image = Image.open(img_path).convert("RGB")
             if self.transform is not None:
                 retrieved_image = self.transform(retrieved_image)
             retrieval_results_images.append(retrieved_image)
