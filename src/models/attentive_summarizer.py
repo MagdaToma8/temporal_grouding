@@ -21,7 +21,8 @@ class AttentiveSummarizer(nn.Module):
             global_embeddings_vision: bool = False,
             global_embeddings_text: bool = False,
             checkpoint_path: Optional[str] = None,
-            random_mask: bool = False
+            random_mask: bool = False,
+            img_size: int = 224
     ):
         super().__init__()
         self.config = pooler_config
@@ -56,6 +57,7 @@ class AttentiveSummarizer(nn.Module):
 
         self.global_embeddings_vision = global_embeddings_vision
         self.global_embeddings_text = global_embeddings_text
+        self.img_size = img_size
 
         # Filter out the keys of the state dict that are not relevant
         if checkpoint_path is not None:
@@ -84,7 +86,7 @@ class AttentiveSummarizer(nn.Module):
         assert "attention_mask" in inputs
 
         inputs.update({
-            "pixel_values": torch.randn(len(inputs["input_ids"]), 3, 224, 224).to(self.vlm_wrapper.model.device),
+            "pixel_values": torch.randn(len(inputs["input_ids"]), 3, self.img_size, self.img_size).to(self.vlm_wrapper.model.device),
         })
 
         outputs = self.vlm_wrapper.get_embeddings(

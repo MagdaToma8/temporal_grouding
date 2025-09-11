@@ -153,7 +153,7 @@ class SummarizerDatasetCollator:
                     truncation=True,
                 )
             processed_batch['query_input_ids'] = processed_query['input_ids']
-            processed_batch['query_attention_mask'] = processed_query['attention_mask']
+            processed_batch['query_attention_mask'] = processed_query['attention_mask'] if "attention_mask" in processed_query else None # type: ignore
 
             # Process ground truth captions
             processed_batch["num_ground_truth_captions"] = len(batch[0]["ground_truth"])
@@ -180,7 +180,7 @@ class SummarizerDatasetCollator:
                     truncation=True,
                 )
             processed_batch['ground_truth_input_ids'] = processed_ground_truth['input_ids']
-            processed_batch['ground_truth_attention_mask'] = processed_ground_truth['attention_mask']
+            processed_batch['ground_truth_attention_mask'] = processed_ground_truth['attention_mask'] if "attention_mask" in processed_ground_truth else None # type: ignore
 
             # Process text feedback from yolo-based models
             # Shape for input_ids and attention_mask:
@@ -202,7 +202,7 @@ class SummarizerDatasetCollator:
                         truncation=True,
                     )
                 processed_batch['text_feedback_input_ids'] = processed_text_feedback['input_ids']
-                processed_batch['text_feedback_attention_mask'] = processed_text_feedback['attention_mask']
+                processed_batch['text_feedback_attention_mask'] = processed_text_feedback['attention_mask'] if "attention_mask" in processed_text_feedback else None # type: ignore
 
             # Process LLaVA-generated captions
             # Flatten generated captions for each retrieved image in topk along the batch dimension
@@ -230,7 +230,7 @@ class SummarizerDatasetCollator:
                         truncation=True,
                     )
                 processed_batch['generated_text_input_ids'] = processed_generated_text['input_ids']
-                processed_batch['generated_text_attention_mask'] = processed_generated_text['attention_mask']
+                processed_batch['generated_text_attention_mask'] = processed_generated_text['attention_mask'] if "attention_mask" in processed_generated_text else None # type: ignore
 
         # Process retrieval results images
         # Flatten topk retrieved images along the batch dimension

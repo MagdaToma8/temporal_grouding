@@ -116,12 +116,10 @@ def main():
     vlm_wrapper = model_config["wrapper_class"](model=model, processor=processor)
 
     # Initialize dataset and dataloader
-    if args.dataset == "cub":
-        dataset, dataset_collator = load_cub_data(data_config, args.split, processor)
-    elif args.dataset == "flickr":
-        dataset, dataset_collator = load_flickr_data(data_config, args.split, processor)
+    if args.dataset == "flickr":
+        dataset, dataset_collator = load_flickr_data(data_config, args.split, processor, siglip2=True if args.model_family == "siglip2" else False)
     elif args.dataset == "coco":
-        dataset, dataset_collator = load_coco_data(data_config, args.split, processor)
+        dataset, dataset_collator = load_coco_data(data_config, args.split, processor, siglip2=True if args.model_family == "siglip2" else False)
     else:
         raise ValueError(f"Dataset {args.dataset} not supported")
 
@@ -147,7 +145,9 @@ def main():
 
         for j in range(dataset.num_captions_to_use):
             input_ids = batch[f"caption_{j}"].to(args.device)
-            attention_mask = batch[f"caption_{j}_attention_mask"].to(args.device)
+            attention_mask = batch[f"caption_{j}_attention_mask"]
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(args.device)
             outputs = vlm_wrapper.get_embeddings(inputs={
                 'pixel_values': images,
                 "input_ids": input_ids,

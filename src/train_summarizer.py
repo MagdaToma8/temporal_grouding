@@ -60,26 +60,30 @@ def main():
             data_config,
             'train',
             processor,
-            summarizer=True
+            summarizer=True,
+            siglip2=True if args.model_family == "siglip2" else False
         )
         val_dataset, val_collator = load_flickr_data(
             data_config,
             'val',
             processor,
-            summarizer=True
+            summarizer=True,
+            siglip2=True if args.model_family == "siglip2" else False
         )
     elif args.dataset == 'coco':
         train_dataset, train_collator = load_coco_data(
             data_config,
             'train',
             processor,
-            summarizer=True
+            summarizer=True,
+            siglip2=True if args.model_family == "siglip2" else False
         )
         val_dataset, val_collator = load_coco_data(
             data_config,
             'val',
             processor,
-            summarizer=True
+            summarizer=True,
+            siglip2=True if args.model_family == "siglip2" else False
         )
 
     train_loader = DataLoader(
@@ -154,7 +158,8 @@ def main():
             early_stopping_callback
         ],
         logger=wandb_logger,
-        log_every_n_steps=5
+        log_every_n_steps=5,
+        precision="bf16-mixed"
     )
 
     trainer.fit(
