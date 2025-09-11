@@ -61,14 +61,14 @@ def main():
             'train',
             processor,
             summarizer=True,
-            siglip2=True if args.model_family == "siglip2" else False
+            siglip2=True if "siglip" in args.model_family else False
         )
         val_dataset, val_collator = load_flickr_data(
             data_config,
             'val',
             processor,
             summarizer=True,
-            siglip2=True if args.model_family == "siglip2" else False
+            siglip2=True if "siglip" in args.model_family else False
         )
     elif args.dataset == 'coco':
         train_dataset, train_collator = load_coco_data(
@@ -76,14 +76,14 @@ def main():
             'train',
             processor,
             summarizer=True,
-            siglip2=True if args.model_family == "siglip2" else False
+            siglip2=True if "siglip" in args.model_family else False
         )
         val_dataset, val_collator = load_coco_data(
             data_config,
             'val',
             processor,
             summarizer=True,
-            siglip2=True if args.model_family == "siglip2" else False
+            siglip2=True if "siglip" in args.model_family else False
         )
 
     train_loader = DataLoader(

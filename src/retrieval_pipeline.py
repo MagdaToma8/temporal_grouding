@@ -411,14 +411,14 @@ def main():
             data_config,
             args.split,
             processor,
-            siglip2=True if args.model_family == "siglip2" else False
+            siglip2=True if "siglip" in args.model_family else False
         )
     elif args.dataset == "coco":
         dataset, dataset_collator = load_coco_data(
             data_config,
             args.split,
             processor,
-            siglip2=True if args.model_family == "siglip2" else False
+            siglip2=True if "siglip" in args.model_family else False
         )
     else:
         raise ValueError(f"Dataset {args.dataset} not supported")

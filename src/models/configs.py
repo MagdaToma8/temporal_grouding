@@ -20,6 +20,8 @@ from src.models.clip import CLIPWrapper
 from src.models.llava import LLaVaWrapper
 from src.models.jinaclip import JinaVLMWrapper, JinaProcessor
 from src.models.siglip2 import SigLip2Wrapper
+from src.models.siglip import SigLipWrapper
+
 
 CONFIGS = {
     "blip2": {
@@ -64,12 +66,18 @@ CONFIGS = {
         "processor_class": JinaProcessor,
         "wrapper_class": JinaVLMWrapper,
     },
+    "siglip": {
+        "model_id": "google/siglip-so400m-patch14-384",
+        "model_class": AutoModel,
+        "processor_class": AutoProcessor,
+        "wrapper_class": SigLipWrapper,
+    },
     "siglip2": {
-        "model_id": "google/siglip2-base-patch16-224",
+        "model_id": "google/siglip2-so400m-patch14-384",
         "model_class": SiglipModel,
         "processor_class": AutoProcessor,
         "wrapper_class": SigLip2Wrapper,
-    }
+    },
 }
 
 def get_model_config(
