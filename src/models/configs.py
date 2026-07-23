@@ -17,6 +17,7 @@ from src.models.blip2 import (
     Blip2ForImageTextEmbeddings
 )
 from src.models.clip import CLIPWrapper
+from src.models.clip_video import CLIPVideoWrapper
 from src.models.llava import LLaVaWrapper
 from src.models.jinaclip import JinaVLMWrapper, JinaProcessor
 from src.models.siglip2 import SigLip2Wrapper
@@ -53,6 +54,12 @@ CONFIGS = {
         "model_class": CLIPModel,
         "processor_class": AutoProcessor,
         "wrapper_class": CLIPWrapper,
+    },
+    "clip_video": {
+        "model_id": "openai/clip-vit-base-patch32",
+        "model_class": CLIPModel,
+        "processor_class": AutoProcessor,
+        "wrapper_class": CLIPVideoWrapper,
     },
     "llava": {
         "model_id": "llava-hf/llava-1.5-7b-hf",

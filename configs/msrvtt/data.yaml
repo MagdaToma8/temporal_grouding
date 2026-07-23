@@ -1,0 +1,3 @@
+data_dir: data/msrvtt/
+num_captions_to_use: 20
+num_frames: 12

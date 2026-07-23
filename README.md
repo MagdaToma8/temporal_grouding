@@ -63,6 +63,50 @@ unzip train2014.zip -d coco/
 unzip val2014.zip -d coco/
 ```
 
+### Download MSR-VTT dataset:
+
+MSR-VTT is a short-video captioning/retrieval dataset. We use the standard "1k-A" split (9,000 train / 1,000 test videos, 20 captions per training video), matching the protocol used by CLIP4Clip and most video-text retrieval literature, plus a validation subset held out from the training videos (see below).
+
+The original MSR-VTT release links are no longer reliable, so we use two third-party mirrors instead:
+* Raw video clips (~6.1GB): hosted by the [Frozen-in-Time](https://github.com/m-bain/frozen-in-time) authors.
+* Captions and 1k-A split files: from the [CLIP4Clip](https://github.com/ArrowLuo/CLIP4Clip) GitHub release.
+
+```
+mkdir data
+mkdir data/msrvtt
+
+python -m src.datasets.download_msrvtt_splits --output_dir data/msrvtt
+```
+
+This downloads and extracts both archives, and writes converted annotations to `data/msrvtt/annotations/{train,val,test}.json`, in the same per-line JSON format used by the COCO/Flickr30k datasets above (`filepath`, `filename`, `sentences`, `sentids`, `imgid`).
+
+Notes:
+* The video archive is large (~6.1GB). If you'd rather fetch it yourself (e.g. with a resumable download manager), place it at `data/msrvtt/MSRVTT.zip` before running the command above -- the script detects the existing file and skips re-downloading it.
+* Use `--skip_videos` to only download and convert the (small) annotation files, without pulling the large video archive -- useful for checking the setup before committing to the full download.
+* Test videos are paired with exactly one caption each (the official JSFusion evaluation caption), matching the standard retrieval protocol; train/val videos keep all 20 captions each.
+* The 1k-A protocol only defines train (9,000) and test (1,000) videos, with nothing held out for validation. We carve `--num_val_videos` (default 500) videos out of the training set instead, using a seeded shuffle (`--seed`, default 28) for reproducibility. This validation split is only used for early-stopping/checkpoint selection during AFS training -- it is not part of the reported retrieval benchmark.
+
+You can use an alternative `--output_dir`, but make sure to update the data config files in `configs/msrvtt/data*.yaml` accordingly.
+
+### VATEX dataset (investigated, not currently used)
+
+We investigated [VATEX](https://eric-xw.github.io/vatex-website/index.html) as a second video-text retrieval dataset alongside MSR-VTT (mirroring how the original paper pairs COCO with Flickr30k), but decided to defer it. This is documented here so it isn't re-investigated from scratch later.
+
+**Why VATEX looked like a good fit:** 10 independent English captions per video -- structurally compatible with this codebase's query/held-out-ground-truth design (one caption as query, the rest as ground truth for AFS/GRF), unlike alternatives such as DiDeMo or ActivityNet Captions, whose standard retrieval protocol concatenates all of a video's descriptions into a single paragraph (effectively 1 caption/video, which does not work with that design).
+
+**The blocker: no direct raw-video download exists for VATEX.** Unlike MSR-VTT (whose raw clips are redistributed directly via a third-party mirror), no comparable mirror hosts VATEX's ~29k train+validation video clips. The official VATEX site only distributes precomputed features, not raw video (see [this unanswered GitHub issue asking exactly this](https://github.com/CASIA-IVA-Lab/VALOR/issues/31)). Captions/annotations themselves are readily available (`HuggingFaceM4/vatex` via the `datasets` library gives `train`/`validation`/`public_test`/`private_test` splits with `videoID`, `start`, `end`, `enCap`), but the actual video pixels require scraping YouTube directly using those ids and timestamps.
+
+**What we built and verified before hitting the blocker:** [download_vatex_splits.py](src/datasets/download_vatex_splits.py) uses `yt-dlp` (with `--download-sections` to fetch only the needed clip range, forcing an H.264/mp4 format selection since YouTube's default AV1/webm output isn't decodable by `decord`) against the HF annotation source above. This was verified working correctly end-to-end at small scale -- real downloads (5 and then 500-per-split smoke tests), including a post-download `decord`-readability check per clip and a val/test carve-out from the official validation split (1,500/1,500, matching the HGR retrieval-eval protocol used in the literature) via `--seed`.
+
+**Why it's deferred:** at the scale needed for the full dataset (~29,000 clips), concurrent `yt-dlp` requests against YouTube triggered bot detection ("sign in to confirm you're not a bot"). This can only be reliably worked around with proxies or a much slower/patient scraping schedule (low concurrency, spread over days), neither of which felt proportionate just to acquire a secondary dataset.
+
+**Alternatives considered and also rejected:**
+* **DiDeMo**: caption structure doesn't fit (paragraph-per-video eval protocol, not multiple independent captions), and its Flickr/YFCC100M video source has its own access problems (Yahoo Webscope, YFCC100M's original distribution channel, no longer offers access).
+* **ActivityNet Captions**: avoids YouTube scraping (official request-form access to a Google/Baidu Drive-hosted mirror of real video files), but has the same paragraph-per-video caption structure problem as DiDeMo, plus a much larger footprint (long-form videos, ~849 video-hours total vs. VATEX's ~10s clips) and a time-boxed 7-day access window.
+* **LSMDC**: avoids scraping (direct download after a license agreement), but is a different content domain (movie clips with audio-description narration) and its caption-per-clip structure (likely one aligned description per clip, not several independent ones) was not verified in detail before deprioritizing it.
+
+**Current status:** proceeding with MSR-VTT only. `download_vatex_splits.py` and its dependencies (`yt-dlp`, `imageio-ffmpeg` in `requirements.txt`) remain in the repo in case this is revisited later with a slower scraping schedule (e.g. on infrastructure where a multi-day low-intensity background job is practical).
+
 ## Scripts
 
 Below are the example commands for running and training different components. You can find more bash scripts for different models and datasets in `scripts/` directory.

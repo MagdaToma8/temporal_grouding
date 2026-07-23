@@ -46,11 +46,16 @@ class CaptioningDataCollator:
             process_images: bool = True,
             num_captions: int = 5,
             siglip2=False,
+            is_video=False,
         ):
         self.processor = processor
         self.process_images = process_images
         self.num_captions = num_captions
         self.siglip2 = siglip2
+        # when True, each example's "image" is a list of num_frames PIL frames instead
+        # of a single image (e.g. MSRVTTDataset). Frames are flattened across the whole
+        # batch for one processor call, then reshaped back to [batch, num_frames, C, H, W].
+        self.is_video = is_video
 
     def __call__(self, batch):
         processed_batch = {}
@@ -59,13 +64,20 @@ class CaptioningDataCollator:
         processed_batch['class_label'] = torch.tensor([example['class_label'] for example in batch])
 
         if self.process_images and self.processor is not None:
-            if not self.siglip2:
+            if self.is_video:
+                num_frames = len(batch[0]['image'])
+                flattened_frames = [frame for example in batch for frame in example['image']]
+                processed_images = self.processor(images=flattened_frames, return_tensors="pt")
+                pixel_values = processed_images['pixel_values']  # [batch*num_frames, C, H, W]
+                processed_batch['image'] = pixel_values.view(len(batch), num_frames, *pixel_values.shape[1:])
+            elif not self.siglip2:
                 processed_img_text = self.processor(
                     images=[example['image'] for example in batch],
                     text=[example[f"caption_{0}"] for example in batch],
                     return_tensors="pt",
                     padding=True
                 )
+                processed_batch['image'] = processed_img_text['pixel_values']
             else:
                 processed_img_text = self.processor(
                     images=[example['image'] for example in batch],
@@ -75,7 +87,7 @@ class CaptioningDataCollator:
                     max_length=64,
                     truncation=True,
                 )
-            processed_batch['image'] = processed_img_text['pixel_values']
+                processed_batch['image'] = processed_img_text['pixel_values']
         else:
             processed_batch['image'] = [example['image'] for example in batch]
 
