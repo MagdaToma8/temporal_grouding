@@ -85,6 +85,7 @@ Notes:
 * Use `--skip_videos` to only download and convert the (small) annotation files, without pulling the large video archive -- useful for checking the setup before committing to the full download.
 * Test videos are paired with exactly one caption each (the official JSFusion evaluation caption), matching the standard retrieval protocol; train/val videos keep all 20 captions each.
 * The 1k-A protocol only defines train (9,000) and test (1,000) videos, with nothing held out for validation. We carve `--num_val_videos` (default 500) videos out of the training set instead, using a seeded shuffle (`--seed`, default 28) for reproducibility. This validation split is only used for early-stopping/checkpoint selection during AFS training -- it is not part of the reported retrieval benchmark.
+* Frames are sampled with TSN-style segment sampling (`num_frames` in the data config, default 12): the clip is split into that many segments and one frame is picked per segment -- a random frame within the segment while training (cheap temporal augmentation), the segment's center frame at eval time (deterministic and reproducible). `segment_overlap` (default `0.0`, range `[0, 1)`) widens each segment beyond its non-overlapping width so neighboring segments share part of their frame range; see `configs/msrvtt/data_overlap.yaml` for an example. Note this only changes anything at *train* time (it shifts which frame is picked deterministically at eval, but doesn't add sampling diversity there, since eval never uses randomness).
 
 You can use an alternative `--output_dir`, but make sure to update the data config files in `configs/msrvtt/data*.yaml` accordingly.
 
@@ -158,6 +159,22 @@ python -m src.retrieval_pipeline \
 
 </details>
 
+Example script for zero-shot retrieval on video (MSR-VTT), no feedback:
+```
+python -m src.retrieval_pipeline \
+    --dataset msrvtt \
+    --data_config configs/msrvtt/data.yaml \
+    --model_family clip_video \
+    --model_id openai/clip-vit-base-patch32 \
+    --batch_size 8 \
+    --split test \
+    --text_from caption_0 \
+    --no_plots \
+    --disable_wandb
+```
+
+`clip_video` ([src/models/clip_video.py](src/models/clip_video.py)) adapts a frozen image CLIP model to video: each sampled frame is encoded independently through the same vision tower a single-image CLIP model would use, and frame embeddings are mean-pooled into one video embedding (the "MeanP" approach from CLIP4Clip). Text is encoded completely independently of any video -- unlike native video-text models such as X-CLIP, whose text embeddings are cross-attended against a specific video's features and are therefore not precomputable ahead of retrieval, which would be incompatible with this codebase's "encode everything once, compare via one similarity matrix" design. On the MSR-VTT test split this gets hits@1/5/10 of 30.6%/53.6%/62.5% (MRR@10 40.3%), matching published zero-shot CLIP mean-pooling baselines for this benchmark.
+
 ### Generate embeddings and retrieval results
 
 In order to train the attentive feedback summarizer (AFS), we need to generate embeddings and retrieval results. The script for this is available in `src/run_embeddings_and_retrieval.py`.
@@ -173,6 +190,8 @@ python -m src.run_embeddings_and_retrieval \
     --embeddings_dir embeddings/flickr30k/blip2/test \
     --split test;
 ```
+
+This also supports `--dataset msrvtt` with `--model_family clip_video` (or any other registered model family), the same way as the retrieval pipeline above.
 
 ### LLaVa for caption generation
 
@@ -205,3 +224,26 @@ python -m src.train_summarizer \
 ```
 
 Check bash scripts `scripts/train_summarizer_clip.sh`, `scripts/train_summarizer_clip_large.sh` and `scripts/train_summarizer_blip2.sh` for more examples.
+
+### Video backbone fine-tuning
+
+Unlike the paper's original design (a frozen pretrained VLM backbone, with only the AFS summarizer trained on top), the video backbone can optionally be fine-tuned directly. This is video-specific: CLIP was never trained on video, so its zero-shot transfer to averaged-frame video representations benefits far more from fine-tuning than the equivalent gap does for still images -- e.g. CLIP4Clip reports zero-shot CLIP mean-pooling at ~27% R@1 on MSR-VTT vs. ~43% after fine-tuning the exact same architecture. The script for this is available in `src/train_backbone.py`.
+
+Two modes, controlled by `--freeze_backbone`:
+* **Full fine-tuning** (default): every parameter of the underlying CLIP model (vision tower, text tower, both projection layers) is trainable. Adapts the model most thoroughly, at the highest compute cost and the highest risk of overfitting/forgetting on a comparatively small dataset like MSR-VTT's ~8.5k training videos.
+* **Partial fine-tuning** (`--freeze_backbone`): the vision and text towers are frozen exactly as pretrained; only the final projection layers are trainable. Much cheaper and lower-risk, at the cost of a more limited adaptation.
+
+Both use a standard symmetric contrastive loss -- CLIP's own training objective: within a batch, matching (video, caption) pairs are pulled together and every other pairing in the batch is pushed apart (`ContrastiveLoss` in [src/models/clip_video_finetuner.py](src/models/clip_video_finetuner.py)). This differs from `CosineSimilarityLoss` ([src/models/attentive_summarizer.py](src/models/attentive_summarizer.py)), which only pulls positive pairs together and is used for training the AFS summarizer on top of a frozen backbone, not for fine-tuning the backbone itself.
+
+Example script:
+```
+python -m src.train_backbone \
+    --data_config configs/msrvtt/data.yaml \
+    --model_family clip_video \
+    --model_id openai/clip-vit-base-patch32 \
+    --batch_size 32 \
+    --max_epochs 10 \
+    --num_workers 4
+```
+
+Add `--freeze_backbone` for partial fine-tuning instead. `--debug` runs 2 train/val batches only, for verifying the training loop is wired correctly before committing to a full run. Fine-tuning the full CLIP model (~151M parameters) is impractical on CPU -- a GPU is effectively required.

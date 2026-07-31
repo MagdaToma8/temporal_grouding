@@ -21,6 +21,7 @@ def load_msrvtt_data(config, split, processor, process_images=False, num_frames=
 
     transform = config.get("transform", None)
     num_frames = num_frames or config.get("num_frames", 12)
+    segment_overlap = config.get("segment_overlap", 0.0)
 
     num_captions_to_use = config.get("num_captions_to_use", 20)
     assert num_captions_to_use > 0, "num_captions_to_use must be greater than 0"
@@ -33,6 +34,7 @@ def load_msrvtt_data(config, split, processor, process_images=False, num_frames=
         transform=transform,
         num_captions_to_use=num_captions_to_use,
         num_frames=num_frames,
+        segment_overlap=segment_overlap,
     )
 
     # is_video=True tells the collator that each example's "image" is a list of num_frames
@@ -58,11 +60,14 @@ class MSRVTTDataset(Dataset):
             transform=None,
             num_captions_to_use: int = 20,
             num_frames: int = 12,
+            segment_overlap: float = 0.0,
     ):
         self.data_dir = data_dir
         self.split = split
         self.transform = transform
         self.num_frames = num_frames
+        assert 0.0 <= segment_overlap < 1.0, "segment_overlap must be in [0, 1)"
+        self.segment_overlap = segment_overlap
         # TSN-style sampling: random frame per segment at train time, center frame at eval time.
         # "val" behaves like "test" here (deterministic) since it's used for checkpoint selection,
         # not for augmentation.
@@ -101,23 +106,34 @@ class MSRVTTDataset(Dataset):
         return len(self.data)
 
     def _sample_frame_indices(self, num_available_frames: int):
-        """TSN-style uniform segment sampling.
+        """TSN-style uniform segment sampling, with optional overlap between segments.
 
-        Divide the clip into `self.num_frames` equal segments; pick a random frame from
-        within each segment at train time, or the center frame at eval time. If a segment
-        has no frames (a clip shorter than num_frames), repeat the last available index.
+        Segments start at the same evenly-spaced points regardless of overlap (so
+        segment_overlap=0.0 reproduces the original non-overlapping behavior exactly).
+        `segment_overlap` widens each segment beyond its non-overlapping width, so it
+        reaches into the next segment's range: at 0.0, segment width == the spacing
+        between segment starts (no overlap); at 0.5, each segment is twice as wide as
+        the non-overlapping case, so it shares half its range with its neighbor.
+
+        Pick a random frame from within each (possibly widened) segment at train time,
+        or the center frame at eval time. If a segment has no frames (a clip shorter
+        than num_frames), repeat the last available index.
         """
-        boundaries = np.linspace(0, num_available_frames, self.num_frames + 1).astype(int)
+        boundaries = np.linspace(0, num_available_frames, self.num_frames + 1)
+        base_stride = num_available_frames / self.num_frames
+        window_width = base_stride / (1 - self.segment_overlap)  # == base_stride when segment_overlap == 0
+
         indices = []
         for i in range(self.num_frames):
-            start, end = boundaries[i], boundaries[i + 1]
+            start = int(boundaries[i])
+            end = int(min(boundaries[i] + window_width, num_available_frames))
             if end <= start:
                 idx = start
             elif self.is_train:
                 idx = random.randint(start, end - 1)
             else:
                 idx = (start + end - 1) // 2
-            indices.append(min(idx, num_available_frames - 1))
+            indices.append(min(max(idx, 0), num_available_frames - 1))
         return indices
 
     def _load_video_frames(self, video_path: str):

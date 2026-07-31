@@ -19,6 +19,8 @@ import wandb
 from src.datasets.coco import load_coco_data
 from src.datasets.cub import load_cub_data
 from src.datasets.flickr import load_flickr_data
+from src.datasets.msrvtt import load_msrvtt_data
+from src.models.clip_video_finetuner import load_finetuned_clip_state_dict
 from src.models.vlm_wrapper import VLMWrapper
 from src.models.configs import get_model_config
 from src.models.attentive_summarizer import AttentiveSummarizer
@@ -105,6 +107,13 @@ def parse_arguments():
         type=str,
         default=None,
         help="Path to the summarizer checkpoint file"
+    )
+    parser.add_argument(
+        "--backbone_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a train_backbone.py (CLIPVideoFineTuner) checkpoint file, to evaluate "
+             "a fine-tuned backbone instead of the pretrained one from --model_id"
     )
     parser.add_argument(
         "--text_from",
@@ -398,6 +407,9 @@ def main():
         model_config["model_id"],
         trust_remote_code=True
     )
+    if args.backbone_checkpoint:
+        model.load_state_dict(load_finetuned_clip_state_dict(args.backbone_checkpoint))
+        print(f"Loaded fine-tuned backbone weights from {args.backbone_checkpoint}")
     model = model.to(args.device)
     print(model_config)
     processor = model_config["processor_class"].from_pretrained(model_config["model_id"])
@@ -419,6 +431,13 @@ def main():
             args.split,
             processor,
             siglip2=True if "siglip" in args.model_family else False
+        )
+    elif args.dataset == "msrvtt":
+        dataset, dataset_collator = load_msrvtt_data(
+            data_config,
+            args.split,
+            processor,
+            process_images=True
         )
     else:
         raise ValueError(f"Dataset {args.dataset} not supported")
