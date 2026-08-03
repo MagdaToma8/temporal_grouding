@@ -274,3 +274,14 @@ This loads just the underlying CLIP weights out of the Lightning checkpoint (`lo
 | MRR@10 | 40.3% | 49.2% |
 
 This sits below CLIP4Clip's own fully-tuned published number (~43% hits@1) -- expected, since this was a single untuned run rather than a hyperparameter search, and the direction/magnitude of improvement (not an exact match to their recipe) is the important finding here.
+
+**Does `segment_overlap` help once training is actually involved?** Earlier, testing `segment_overlap=0.5` against the *zero-shot* backbone came back flat (see the MSR-VTT dataset section above) -- expected, since with nothing being trained, overlap can only shift which frame gets picked deterministically at eval, not provide a richer variety for a model to actually learn from. Re-running the exact same fine-tuning recipe with `configs/msrvtt/data_overlap.yaml` (`segment_overlap=0.5`) instead of `configs/msrvtt/data.yaml` -- identical batch size, epochs, and evaluation protocol, so the comparison isolates only the training-time sampling difference -- gives a modest additional improvement on top of fine-tuning:
+
+| Metric | Zero-shot | Fine-tuned (no overlap) | Fine-tuned (overlap=0.5) |
+|---|---|---|---|
+| hits@1 | 30.6% | 36.8% | 39.1% |
+| hits@5 | 53.6% | 65.8% | 66.0% |
+| hits@10 | 62.5% | 76.2% | 77.1% |
+| MRR@10 | 40.3% | 49.2% | 50.6% |
+
+Every metric is equal-or-better with overlap enabled during training (none regressed), with the clearest gains in hits@1 (+2.3 pp) and MRR@10 (+1.4 pp) over the no-overlap fine-tune. This is a single run per condition, not repeated across multiple seeds, so treat the *magnitude* as indicative rather than statistically confirmed -- but the direction is exactly what the original hypothesis predicted: overlap's benefit only shows up once training can actually exploit the richer per-epoch sampling variety.
