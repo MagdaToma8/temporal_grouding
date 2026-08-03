@@ -247,3 +247,30 @@ python -m src.train_backbone \
 ```
 
 Add `--freeze_backbone` for partial fine-tuning instead. `--debug` runs 2 train/val batches only, for verifying the training loop is wired correctly before committing to a full run. Fine-tuning the full CLIP model (~151M parameters) is impractical on CPU -- a GPU is effectively required.
+
+**Evaluating a fine-tuned checkpoint.** Pass the resulting `.ckpt` file's path via `--backbone_checkpoint` to either `retrieval_pipeline.py` or `run_embeddings_and_retrieval.py`, instead of the pretrained weights `--model_id` would otherwise load:
+```
+python -m src.retrieval_pipeline \
+    --dataset msrvtt \
+    --data_config configs/msrvtt/data.yaml \
+    --model_family clip_video \
+    --model_id openai/clip-vit-base-patch32 \
+    --backbone_checkpoint checkpoints/backbone/<run>/epoch=7-val_loss=0.5414.ckpt \
+    --batch_size 8 \
+    --split test \
+    --text_from caption_0 \
+    --no_plots \
+    --disable_wandb
+```
+This loads just the underlying CLIP weights out of the Lightning checkpoint (`load_finetuned_clip_state_dict` in [src/models/clip_video_finetuner.py](src/models/clip_video_finetuner.py) -- it strips the `vlm_wrapper_model.` prefix and drops the loss's own learnable temperature, which isn't part of the CLIP model itself) into a fresh `CLIPModel`, so it can be evaluated exactly like the pretrained one.
+
+**Result**: full fine-tuning (~8 epochs before early stopping, no hyperparameter search) improved MSR-VTT test-set retrieval substantially over the zero-shot baseline reported above:
+
+| Metric | Zero-shot | Fine-tuned |
+|---|---|---|
+| hits@1 | 30.6% | 36.8% |
+| hits@5 | 53.6% | 65.8% |
+| hits@10 | 62.5% | 76.2% |
+| MRR@10 | 40.3% | 49.2% |
+
+This sits below CLIP4Clip's own fully-tuned published number (~43% hits@1) -- expected, since this was a single untuned run rather than a hyperparameter search, and the direction/magnitude of improvement (not an exact match to their recipe) is the important finding here.
