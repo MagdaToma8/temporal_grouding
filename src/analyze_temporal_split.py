@@ -1,11 +1,17 @@
 """
 One-off analysis script: splits MSR-VTT test-set retrieval performance into
 "temporal-dependent" vs "static-sufficient" caption categories (labels produced
-by manual/LLM classification, see scratchpad/caption_temporal_labels.json),
+by manual/LLM classification, see analysis/msrvtt_test_temporal_labels.json),
 to answer whether temporal information matters more for one category than the other.
 
 Not part of the regular pipeline -- mirrors the embedding/retrieval logic in
 src/retrieval_pipeline.py but keeps per-query ranks instead of only aggregate metrics.
+
+Example:
+    python -m src.analyze_temporal_split \\
+        --data_config configs/msrvtt/data.yaml \\
+        --labels_file analysis/msrvtt_test_temporal_labels.json \\
+        --label zero-shot_12frame
 """
 import argparse
 import json

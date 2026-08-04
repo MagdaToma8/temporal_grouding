@@ -305,7 +305,15 @@ Both backbones lose substantial performance going from 12 frames to 1 (as expect
 * **temporal-dependent** (139 captions, 14%): the caption centers on an action/event whose defining characteristic is motion or a state change that a single still frame would likely misrepresent or leave ambiguous -- e.g. *"a bus crashes into a car"*, *"man standing on the ledge of a very tall building jumps off"*, *"polar bear jumps into water then plays around while people watch"*.
 * **static-sufficient** (861 captions, 86%): identifiable from one representative frame -- scenes, objects, categories, talking/interview footage, generic cooking/dancing/sports mentions, etc. -- e.g. *"a man is talking about business"*, *"a woman is playing piano"*, *"cartoon show for kids"*.
 
-(Classification script/labels are not part of the regular pipeline; the retrieval numbers below come from `analyze_temporal_split.py`, a one-off analysis script that mirrors `retrieval_pipeline.py`'s embedding/similarity logic but keeps per-query ranks instead of only aggregate metrics.)
+Not part of the regular pipeline, but kept in the repo for reproducibility: labels are in [analysis/msrvtt_test_temporal_labels.json](analysis/msrvtt_test_temporal_labels.json) (`{filename: "temporal"|"static"}` for all 1,000 test videos), and the retrieval numbers below come from [src/analyze_temporal_split.py](src/analyze_temporal_split.py), a one-off analysis script that mirrors `retrieval_pipeline.py`'s embedding/similarity logic but keeps per-query ranks instead of only aggregate metrics:
+```
+python -m src.analyze_temporal_split \
+    --data_config configs/msrvtt/data.yaml \
+    --backbone_checkpoint checkpoints/backbone/<run>/epoch=7-val_loss=0.5414.ckpt \
+    --labels_file analysis/msrvtt_test_temporal_labels.json \
+    --label finetuned_12frame
+```
+(omit `--backbone_checkpoint` for the zero-shot backbone; swap `--data_config` to `configs/msrvtt/data_1frame.yaml` for the 1-frame condition.)
 
 | Setup | Category (n) | hits@1 | hits@5 | hits@10 | MRR@10 |
 |---|---|---|---|---|---|
