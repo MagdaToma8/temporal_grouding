@@ -285,3 +285,47 @@ This sits below CLIP4Clip's own fully-tuned published number (~43% hits@1) -- ex
 | MRR@10 | 40.3% | 49.2% | 50.6% |
 
 Every metric is equal-or-better with overlap enabled during training (none regressed), with the clearest gains in hits@1 (+2.3 pp) and MRR@10 (+1.4 pp) over the no-overlap fine-tune. This is a single run per condition, not repeated across multiple seeds, so treat the *magnitude* as indicative rather than statistically confirmed -- but the direction is exactly what the original hypothesis predicted: overlap's benefit only shows up once training can actually exploit the richer per-epoch sampling variety.
+
+### Does temporal information actually help?
+
+Before moving to a tubelet-based backbone, we ran two experiments to check whether the current mean-pooling backbone is extracting any genuine temporal/motion signal, or whether it's succeeding purely on single-frame appearance cues.
+
+**Test 1: num_frames=1 vs num_frames=12.** Same zero-shot and fine-tuned (no-overlap) checkpoints as above, re-evaluated with `configs/msrvtt/data_1frame.yaml` (`num_frames: 1`) instead of the usual 12-frame config:
+
+| Metric | Zero-shot, 12f | Zero-shot, 1f | Fine-tuned, 12f | Fine-tuned, 1f |
+|---|---|---|---|---|
+| hits@1 | 30.6% | 23.6% | 36.8% | 26.9% |
+| hits@5 | 53.6% | 43.6% | 65.8% | 52.3% |
+| hits@10 | 62.5% | 53.5% | 76.2% | 62.7% |
+| MRR@10 | 40.3% | 32.2% | 49.2% | 38.0% |
+
+Both backbones lose substantial performance going from 12 frames to 1 (as expected -- a single random-ish frame is a noisier summary of a video than 12 averaged together), and fine-tuning increases that reliance on multiple frames rather than reducing it (hits@1 drop: -7.0 pp zero-shot vs. -9.9 pp fine-tuned). This alone doesn't prove *temporal/motion* understanding, though -- since `CLIPVideoWrapper` mean-pools frame embeddings (order-invariant), the gain from more frames could equally be explained by "more independent visual samples of the same scene reduce the chance of a single bad/uninformative frame," with no actual motion modeling involved.
+
+**Test 2: splitting retrieval by caption category.** To isolate whether the *content* of the gain is temporal, all 1,000 MSR-VTT test captions were classified (manually, by direct LLM judgment against a fixed rubric -- not a keyword heuristic) into two buckets:
+* **temporal-dependent** (139 captions, 14%): the caption centers on an action/event whose defining characteristic is motion or a state change that a single still frame would likely misrepresent or leave ambiguous -- e.g. *"a bus crashes into a car"*, *"man standing on the ledge of a very tall building jumps off"*, *"polar bear jumps into water then plays around while people watch"*.
+* **static-sufficient** (861 captions, 86%): identifiable from one representative frame -- scenes, objects, categories, talking/interview footage, generic cooking/dancing/sports mentions, etc. -- e.g. *"a man is talking about business"*, *"a woman is playing piano"*, *"cartoon show for kids"*.
+
+(Classification script/labels are not part of the regular pipeline; the retrieval numbers below come from `analyze_temporal_split.py`, a one-off analysis script that mirrors `retrieval_pipeline.py`'s embedding/similarity logic but keeps per-query ranks instead of only aggregate metrics.)
+
+| Setup | Category (n) | hits@1 | hits@5 | hits@10 | MRR@10 |
+|---|---|---|---|---|---|
+| Zero-shot, 12 frames | overall (1000) | 30.6% | 53.6% | 62.7% | 40.4% |
+| | temporal (139) | 36.0% | 64.0% | 71.9% | 48.1% |
+| | static (861) | 29.7% | 51.9% | 61.2% | 39.1% |
+| Fine-tuned, 12 frames | overall (1000) | 36.8% | 65.8% | 76.2% | 49.2% |
+| | temporal (139) | 48.2% | 71.9% | 82.0% | 59.3% |
+| | static (861) | 35.0% | 64.8% | 75.3% | 47.6% |
+| Zero-shot, 1 frame | overall (1000) | 23.6% | 43.6% | 53.5% | 32.2% |
+| | temporal (139) | 32.4% | 57.6% | 66.9% | 43.1% |
+| | static (861) | 22.2% | 41.4% | 51.3% | 30.5% |
+| Fine-tuned, 1 frame | overall (1000) | 26.9% | 52.3% | 62.7% | 38.0% |
+| | temporal (139) | 36.0% | 60.4% | 74.8% | 48.1% |
+| | static (861) | 25.4% | 51.0% | 60.7% | 36.3% |
+
+**Finding (counterintuitive at first glance): temporal-dependent captions retrieve *better* than static ones, in every single setup above.** This is not evidence that the model understands motion -- it's much more likely a caption-distinctiveness confound. MSR-VTT's static captions are highly repetitive across the 1,000-video test set (many near-duplicate captions like "a man is talking" / "a woman is talking about X"), which makes retrieval intrinsically harder for that bucket regardless of what the model can see, since there are many confusable competitors. A caption like "a bus crashes into a car" is rare and specific, so it's easy to retrieve correctly even from imperfect visual understanding, simply because there's little competition among the other 999 candidates.
+
+The frame-count ablation, split by category, doesn't support genuine temporal modeling either: if the backbone were exploiting motion, going from 12 frames to 1 should hurt temporal-labeled captions *more* than static ones. It doesn't, consistently -- zero-shot hits@1 drops 36.0%→32.4% (-3.6 pp) for temporal vs. 29.7%→22.2% (-7.5 pp) for static (static drops *more*); fine-tuned hits@1 drops 48.2%→36.0% (-12.2 pp) for temporal vs. 35.0%→25.4% (-9.6 pp) for static (roughly comparable, temporal only marginally larger).
+
+**Conclusion:** `CLIPVideoWrapper`'s mean-pooling is architecturally order-invariant, so it cannot represent motion direction or sequence no matter how many frames it's given -- the benefit of more frames (Test 1) looks like visual-sampling robustness, not temporal understanding, and is consistent with Test 2 showing no extra frame-count penalty specifically for motion-heavy captions. This motivates the planned move to a tubelet-based backbone (VideoMAE), which encodes short spatio-temporal patches directly instead of pooling independently-encoded frames -- re-running this same temporal/static split afterward is the real test of whether architectural motion modeling (not just more frames) closes the gap on the temporal-dependent bucket specifically.
+
+**Caveats:** the temporal/static classification is a single LLM annotation pass against a fixed rubric, not independently verified or double-annotated against human labels, and the temporal bucket is small (n=139 out of 1,000), so category-level numbers carry real sampling noise. Treat this as a directional signal rather than a statistically confirmed result.
