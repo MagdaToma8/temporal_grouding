@@ -104,13 +104,33 @@ class CLIPVideoFineTuner(LightningModule):
         self.criterion = ContrastiveLoss(temperature=temperature)
         self.save_hyperparameters(ignore=["vlm_wrapper"])
 
+        # Some backbones freeze parts of themselves at construction time regardless of what
+        # we want here -- e.g. ViCLIP's own __init__ freezes its text encoder by default
+        # (freeze_text=True), unlike a freshly-loaded CLIPModel where everything already
+        # requires grad. Force everything trainable first so "full fine-tuning" (the
+        # freeze_backbone=False default) actually means all parameters, for every backbone.
+        for param in self.vlm_wrapper_model.parameters():
+            param.requires_grad = True
+
         if freeze_backbone:
             for param in self.vlm_wrapper_model.parameters():
                 param.requires_grad = False
-            for param in self.vlm_wrapper_model.visual_projection.parameters():
-                param.requires_grad = True
-            for param in self.vlm_wrapper_model.text_projection.parameters():
-                param.requires_grad = True
+            if hasattr(self.vlm_wrapper_model, "visual_projection"):
+                # CLIP-style: projections are separate nn.Linear submodules.
+                for param in self.vlm_wrapper_model.visual_projection.parameters():
+                    param.requires_grad = True
+                for param in self.vlm_wrapper_model.text_projection.parameters():
+                    param.requires_grad = True
+            elif hasattr(self.vlm_wrapper_model, "vision_encoder"):
+                # ViCLIP-style: projections are raw nn.Parameter tensors on the vision/text
+                # encoders, not separate submodules with their own .parameters().
+                self.vlm_wrapper_model.vision_encoder.proj.requires_grad = True
+                self.vlm_wrapper_model.text_encoder.text_projection.requires_grad = True
+            else:
+                raise NotImplementedError(
+                    f"freeze_backbone partial fine-tuning isn't implemented for "
+                    f"{type(self.vlm_wrapper_model).__name__} -- add a branch here."
+                )
 
     def forward(self, batch: Dict[str, Any]):
         outputs = self.vlm_wrapper.get_embeddings(inputs={

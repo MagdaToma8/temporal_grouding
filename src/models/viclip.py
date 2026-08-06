@@ -30,9 +30,13 @@ class ViCLIPModelLoader:
 
     @staticmethod
     def from_pretrained(model_id: str, **kwargs):
+        # trust_remote_code is required for this model family (its modeling code lives in
+        # the HF repo, not in `transformers` itself) -- forced True here rather than left to
+        # the caller, since not every caller passes it (e.g. train_backbone.py doesn't).
+        kwargs.pop("trust_remote_code", None)
         config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
         config.tokenizer_path = _VENDORED_BPE_VOCAB_PATH
-        return AutoModel.from_pretrained(model_id, config=config, **kwargs)
+        return AutoModel.from_pretrained(model_id, config=config, trust_remote_code=True, **kwargs)
 
 # ViCLIP was initialized from CLIP but preprocesses frames with plain ImageNet
 # normalization (not CLIP's own mean/std), per its reference demo.ipynb.
