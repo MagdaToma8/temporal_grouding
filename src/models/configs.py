@@ -22,6 +22,7 @@ from src.models.llava import LLaVaWrapper
 from src.models.jinaclip import JinaVLMWrapper, JinaProcessor
 from src.models.siglip2 import SigLip2Wrapper
 from src.models.siglip import SigLipWrapper
+from src.models.viclip import ViCLIPWrapper, ViCLIPProcessor, ViCLIPModelLoader
 
 
 CONFIGS = {
@@ -84,6 +85,12 @@ CONFIGS = {
         "model_class": SiglipModel,
         "processor_class": AutoProcessor,
         "wrapper_class": SigLip2Wrapper,
+    },
+    "viclip": {
+        "model_id": "OpenGVLab/ViCLIP-B-16-hf",
+        "model_class": ViCLIPModelLoader,
+        "processor_class": ViCLIPProcessor,
+        "wrapper_class": ViCLIPWrapper,
     },
 }
 

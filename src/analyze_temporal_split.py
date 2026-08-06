@@ -10,6 +10,8 @@ src/retrieval_pipeline.py but keeps per-query ranks instead of only aggregate me
 Example:
     python -m src.analyze_temporal_split \\
         --data_config configs/msrvtt/data.yaml \\
+        --model_family clip_video \\
+        --model_id openai/clip-vit-base-patch32 \\
         --labels_file analysis/msrvtt_test_temporal_labels.json \\
         --label zero-shot_12frame
 """
@@ -31,7 +33,9 @@ from src.utils.utils import load_yaml_file
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data_config", required=True)
-    p.add_argument("--backbone_checkpoint", default=None)
+    p.add_argument("--model_family", default="clip_video", help="Model family, as registered in src/models/configs.py")
+    p.add_argument("--model_id", default="openai/clip-vit-base-patch32")
+    p.add_argument("--backbone_checkpoint", default=None, help="CLIP-family fine-tuned checkpoint (see load_finetuned_clip_state_dict); not applicable to every model_family")
     p.add_argument("--labels_file", required=True)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -43,7 +47,7 @@ def main():
     args = parse_args()
     data_config = load_yaml_file(args.data_config)
 
-    model_config = get_model_config("clip_video", "openai/clip-vit-base-patch32")
+    model_config = get_model_config(args.model_family, args.model_id)
     model = model_config["model_class"].from_pretrained(model_config["model_id"], trust_remote_code=True)
     if args.backbone_checkpoint:
         model.load_state_dict(load_finetuned_clip_state_dict(args.backbone_checkpoint))

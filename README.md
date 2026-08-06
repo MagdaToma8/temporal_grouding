@@ -337,3 +337,53 @@ The frame-count ablation, split by category, doesn't support genuine temporal mo
 **Conclusion:** `CLIPVideoWrapper`'s mean-pooling is architecturally order-invariant, so it cannot represent motion direction or sequence no matter how many frames it's given -- the benefit of more frames (Test 1) looks like visual-sampling robustness, not temporal understanding, and is consistent with Test 2 showing no extra frame-count penalty specifically for motion-heavy captions. This motivates the planned move to a tubelet-based backbone (VideoMAE), which encodes short spatio-temporal patches directly instead of pooling independently-encoded frames -- re-running this same temporal/static split afterward is the real test of whether architectural motion modeling (not just more frames) closes the gap on the temporal-dependent bucket specifically.
 
 **Caveats:** the temporal/static classification is a single LLM annotation pass against a fixed rubric, not independently verified or double-annotated against human labels, and the temporal bucket is small (n=139 out of 1,000), so category-level numbers carry real sampling noise. Treat this as a directional signal rather than a statistically confirmed result.
+
+### Video backbone, take two: ViCLIP-B (tubelet/spatiotemporal attention)
+
+Following directly from the conclusion above, `CLIPVideoWrapper`'s per-frame-then-mean-pool design was swapped for [ViCLIP-B](https://huggingface.co/OpenGVLab/ViCLIP-B-16-hf) (`src/models/viclip.py`, registered as model family `viclip`), a genuinely motion-aware video-text backbone from the [InternVid](https://arxiv.org/pdf/2307.06942.pdf) project. Unlike mean-pooling, ViCLIP's vision tower feeds every frame's patches into the *same* self-attention layers at once (joint spatiotemporal attention), so a patch in one frame can directly attend to a patch in another frame -- the representation can depend on cross-frame relationships, not just an average of independent per-frame encodings. Its architecture is CLIP's own ViT-B/16 with plain spatial attention replaced by this joint spatiotemporal attention, initialized from CLIP and further contrastively pretrained on InternVid-10M video-text pairs -- so, like the CLIP backbone, it comes with a usable zero-shot starting point rather than needing an alignment trained from nothing. At 149.6M parameters it's directly comparable in scale to the CLIP ViT-B/32 backbone used throughout the rest of this project.
+
+Text is still encoded fully independently of any video (a plain CLIP text transformer, not cross-attended against video features), preserving the "encode everything once, compare via one similarity matrix" retrieval design that ruled out X-CLIP earlier.
+
+**Integration notes** (this was a meaningfully bigger lift than `CLIPVideoWrapper`, which only needed a `transformers.CLIPModel` + `CLIPProcessor`):
+* ViCLIP-B has no HuggingFace `AutoProcessor` -- it preprocesses frames with plain ImageNet normalization (not CLIP's own mean/std) and tokenizes text with its own BPE tokenizer at a 32-token context length (not CLIP's 77). `ViCLIPProcessor` reimplements both by hand, matching the reference `demo.ipynb` numbers exactly.
+* The model loads via `AutoModel.from_pretrained(..., trust_remote_code=True)` (downloads and runs the repo's own modeling code), which pulled in several previously-unneeded dependencies one `ImportError` at a time: `einops`, `timm`, `fvcore`, `ftfy`, `regex` (all added to `requirements.txt`).
+* The upstream `config.json` ships a `tokenizer_path` of `"./bpe_simple_vocab_16e6.txt.gz"` -- a bare relative path that only resolves if the process's cwd happens to be inside HF's dynamic-module cache, which it never is here. `ViCLIPModelLoader` (`src/models/viclip.py`) works around this by patching the config to point at our own vendored copy of the identical vocab file (`src/models/viclip_assets/`) before constructing the model, so the generic `model_class.from_pretrained(model_id, trust_remote_code=True)` call in `retrieval_pipeline.py` etc. keeps working unmodified.
+* `tests/test_viclip_wrapper.py` proves `ViCLIPProcessor`'s reimplemented preprocessing is numerically identical (`torch.allclose`, `atol=1e-4`/`1e-5`) to feeding the same real MSR-VTT video frames through ViCLIP's own reference preprocessing and inference code, plus a shape/normalization check through the full `load_msrvtt_data` + collator + wrapper path -- the same "prove it" pattern used for `CLIPVideoWrapper`.
+* `configs/msrvtt/data_viclip.yaml` uses `num_frames: 8` (ViCLIP's own pretraining frame count) rather than the 12 used for CLIP mean-pooling.
+
+**Result**: zero-shot ViCLIP-B substantially outperforms zero-shot CLIP mean-pooling on MSR-VTT test:
+
+| Metric | CLIP mean-pool, zero-shot (12 frames) | ViCLIP-B, zero-shot (8 frames) |
+|---|---|---|
+| hits@1 | 30.6% | 37.4% |
+| hits@5 | 53.6% | 59.6% |
+| hits@10 | 62.5% | 71.9% |
+| MRR@10 | 40.3% | 47.3% |
+
+This is directionally expected (ViCLIP-B was actually pretrained on large-scale video-text pairs with genuine temporal attention, versus CLIP mean-pooling being an image model repurposed for video) but there is no published MSR-VTT retrieval number for ViCLIP-B to cross-check against here -- only Kinetics zero-shot action-recognition numbers were available from the source repo -- so treat this as "large, sensible, non-degenerate improvement" rather than a literature-verified exact match.
+
+**Temporal-vs-static split, revisited.** `src/analyze_temporal_split.py` was generalized to accept `--model_family`/`--model_id` (instead of being CLIP-only) and re-run on zero-shot ViCLIP-B (`configs/msrvtt/data_viclip.yaml`, same 1,000-video test set and temporal/static labels as before):
+
+| Category (n) | CLIP mean-pool, zero-shot (12f) | ViCLIP-B, zero-shot (8f) |
+|---|---|---|
+| overall (1000) | hits@1=30.6% | hits@1=37.4% |
+| temporal (139) | hits@1=36.0% | hits@1=48.9% |
+| static (861) | hits@1=29.7% | hits@1=35.5% |
+| **temporal − static gap** | **+6.3 pp** | **+13.4 pp** |
+
+The temporal/static gap more than doubles under ViCLIP-B. Encouraging, but on its own this doesn't prove genuine temporal modeling -- ViCLIP-B is simply a better model overall (it beats CLIP on *both* categories) and was pretrained partly on action-recognition data, which could just mean better vocabulary for action words rather than actually using cross-frame motion.
+
+**The decisive check: does the gap depend on having multiple frames?** Re-ran the same split with `configs/msrvtt/data_viclip_1frame.yaml` (`num_frames: 1`) -- ViCLIP-B's temporal positional embedding has a built-in single-frame path (verified with a smoke test before committing to the full run), so this ablation is directly comparable to the CLIP mean-pooling one from the section above:
+
+| | ViCLIP-B, 8 frames | ViCLIP-B, 1 frame | drop |
+|---|---|---|---|
+| overall hits@1 | 37.4% | 29.4% | −8.0 pp |
+| temporal hits@1 (n=139) | 48.9% | 39.6% | **−9.4 pp** |
+| static hits@1 (n=861) | 35.5% | 27.8% | −7.8 pp |
+| temporal − static gap | +13.4 pp | +11.8 pp | narrows |
+
+This is the first result in the whole project pointing the *expected* direction: with CLIP mean-pooling, dropping to 1 frame hurt **static** captions more than temporal ones (−7.5 pp vs −3.6 pp) -- the wrong direction for "the model is using motion." With ViCLIP-B, it's reversed: **temporal** captions lose more from fewer frames (−9.4 pp vs −7.8 pp), and the temporal/static gap shrinks when frames are taken away. Both are consistent with the joint spatiotemporal attention actually depending on multiple frames specifically for motion-dependent content, not just averaging away single-frame noise.
+
+**How much to trust this:** the effect is real but modest (1.6 pp difference in frame-count sensitivity between the two categories) and the temporal bucket is small (n=139), so this is directional evidence, not a statistically "bulletproof" result. But it's a meaningfully different pattern than CLIP mean-pooling showed on the exact same captions and exact same evaluation protocol, in the direction genuine temporal modeling would predict.
+
+**Next**: fine-tuning ViCLIP-B on MSR-VTT's training set (mirroring the CLIP fine-tuning setup) is the natural following step, and will need the GPU cluster -- full fine-tuning at this model's per-batch cost (~20s/batch on CPU here, vs CLIP mean-pooling's ~1s/batch) is impractical without one.
