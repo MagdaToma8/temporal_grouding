@@ -386,4 +386,39 @@ This is the first result in the whole project pointing the *expected* direction:
 
 **How much to trust this:** the effect is real but modest (1.6 pp difference in frame-count sensitivity between the two categories) and the temporal bucket is small (n=139), so this is directional evidence, not a statistically "bulletproof" result. But it's a meaningfully different pattern than CLIP mean-pooling showed on the exact same captions and exact same evaluation protocol, in the direction genuine temporal modeling would predict.
 
-**Next**: fine-tuning ViCLIP-B on MSR-VTT's training set (mirroring the CLIP fine-tuning setup) is the natural following step, and will need the GPU cluster -- full fine-tuning at this model's per-batch cost (~20s/batch on CPU here, vs CLIP mean-pooling's ~1s/batch) is impractical without one.
+<!-- ### Fine-tuning ViCLIP-B -->
+<!-- 
+`train_backbone.py` and `CLIPVideoFineTuner` (`src/models/clip_video_finetuner.py`) were already family-agnostic in most respects (both take `--model_family`/`--model_id`), but fine-tuning ViCLIP-B surfaced two real bugs, both caught and fixed before running the actual cluster job:
+* `ViCLIPModelLoader.from_pretrained` now always forces `trust_remote_code=True` internally, rather than relying on the caller to pass it -- `retrieval_pipeline.py` does, but `train_backbone.py`'s generic `model_config["model_class"].from_pretrained(model_config["model_id"])` call doesn't, so this silently would have failed.
+* ViCLIP's own `__init__` freezes its text encoder by default (`freeze_text=True`), unlike a freshly-loaded `CLIPModel` where every parameter already requires grad. Without an explicit fix, "full fine-tuning" (`freeze_backbone=False`, the default) would have silently left ViCLIP's 63.4M-parameter text tower frozen the whole time. `CLIPVideoFineTuner.__init__` now force-unfreezes every backbone parameter before applying `freeze_backbone`, so "full" actually means full for every backbone family.
+* The `freeze_backbone=True` (partial fine-tuning) branch was also generalized: CLIP exposes `visual_projection`/`text_projection` as separate `nn.Linear` submodules, while ViCLIP's equivalents (`vision_encoder.proj`, `text_encoder.text_projection`) are raw `nn.Parameter` tensors with no `.parameters()` of their own, so the branch now checks which shape the backbone has and targets the right thing either way. -->
+<!-- 
+Both fixes were verified locally with `--debug` runs before the real job: full fine-tuning reported `149M/149M` trainable params, partial reported `655K/149M` (exactly `768×512` vision proj + `512×512` text proj -- confirms the right two parameters, nothing more or less). -->
+
+**Cluster run Fine-tuned ViCLIP-B**: same recipe as the CLIP fine-tune (full fine-tuning, 15 max epochs, early stopping patience 5, `configs/msrvtt/data_viclip.yaml`), `--batch_size 16` instead of CLIP's 32 (ViCLIP attends jointly over all 8 frames' patches at once -- 1,576 tokens per video vs. CLIP's independently-processed 50 tokens/frame -- so it needs more memory per example). Ran the full 15 epochs without early stopping triggering (val/loss was still improving at the end, reaching 0.290) -- more epochs might have helped further, left as a future refinement.
+
+**Result**: fine-tuned ViCLIP-B is the best backbone in this project so far, and the temporal/static analysis was re-run on it too, at both frame counts:
+
+| Setup | Category (n) | hits@1 | hits@5 | hits@10 | MRR@10 |
+|---|---|---|---|---|---|
+| Zero-shot, 8 frames | overall (1000) | 37.4% | 59.6% | 71.9% | 47.3% |
+| | temporal (139) | 48.9% | 73.4% | 84.2% | 60.2% |
+| | static (861) | 35.5% | 57.4% | 69.9% | 45.2% |
+| **Fine-tuned, 8 frames** | **overall (1000)** | **44.7%** | **69.9%** | **79.6%** | **55.7%** |
+| | temporal (139) | 54.0% | 78.4% | 87.8% | 64.7% |
+| | static (861) | 43.2% | 68.5% | 78.3% | 54.3% |
+| Zero-shot, 1 frame | overall (1000) | 29.4% | 50.3% | 59.6% | 38.0% |
+| | temporal (139) | 39.6% | 65.5% | 74.8% | 49.8% |
+| | static (861) | 27.8% | 47.9% | 57.1% | 36.1% |
+| Fine-tuned, 1 frame | overall (1000) | 31.3% | 55.2% | 67.3% | 41.5% |
+| | temporal (139) | 39.6% | 64.8% | 76.3% | 50.2% |
+| | static (861) | 30.0% | 53.7% | 65.9% | 40.1% |
+
+**Headline**: fine-tuned ViCLIP-B (44.7% hits@1) beats fine-tuned CLIP mean-pooling (36.8% hits@1, see above) by +7.9 pp -- the best result across every backbone tried in this project. Fine-tuning helped ViCLIP-B by roughly the same margin it helped CLIP (+7.3 pp vs. CLIP's +6.2 pp).
+
+**Three more findings from re-running the frame-count/category analysis on the fine-tuned checkpoint:**
+1. **Fine-tuning increased frame-count dependence, same as it did for CLIP.** Zero-shot ViCLIP-B drops 8.0 pp going from 8→1 frame; fine-tuned drops 13.4 pp -- mirrors CLIP's own zero-shot-vs-fine-tuned pattern (−7.0 pp vs −9.9 pp). Fine-tuning makes both architectures lean harder on having multiple frames available.
+2. **The "temporal captions are more frame-sensitive" signal survives fine-tuning, at roughly the same modest size.** Fine-tuned: temporal drops 14.4 pp (8→1 frame) vs. static's 13.2 pp -- still temporal-drops-more, same direction as zero-shot's 9.4 pp vs. 7.8 pp. Fine-tuning neither erased nor dramatically amplified this signal.
+3. **But fine-tuning's raw improvement was actually larger for static captions than temporal ones** -- static gained +7.7 pp (35.5%→43.2%) at 8 frames vs. temporal's +5.0 pp (48.9%→54.0%). If fine-tuning were specifically sharpening motion understanding, the opposite would be expected. This is consistent with the same caption-frequency explanation raised earlier: static captions are 86% of the training data, so there's simply more signal to learn from for that category -- fine-tuning's gains look like general improvement, not motion-targeted improvement.
+
+**Overall takeaway across both experiments (zero-shot and fine-tuned):** ViCLIP-B's joint spatiotemporal attention shows real, if modest, evidence of using cross-frame information specifically for motion-dependent captions (finding 2, both zero-shot and fine-tuned) -- something CLIP mean-pooling never showed in either regime. But the *size* of the improvement from fine-tuning is not concentrated on temporal content (finding 3) -- fine-tuning mostly just makes the model better overall, on top of an architecture that was already somewhat motion-aware from pretraining. Both effects are small relative to the temporal bucket's sample size (n=139), so treat the direction as the finding, not the exact magnitude.
