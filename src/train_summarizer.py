@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 
 from src.datasets.flickr import load_flickr_data
 from src.datasets.coco import load_coco_data
+from src.datasets.msrvtt import load_msrvtt_data
 from src.models.attentive_summarizer import AttentiveSummarizer, AlignmentAttentiveSummarizer
 from src.models.configs import get_model_config
 from src.utils.utils import load_yaml_file, generate_experiment_id
@@ -85,6 +86,21 @@ def main():
             summarizer=True,
             siglip2=True if "siglip" in args.model_family else False
         )
+    elif args.dataset == 'msrvtt':
+        train_dataset, train_collator = load_msrvtt_data(
+            data_config,
+            'train',
+            processor,
+            summarizer=True,
+            siglip2=True if "siglip" in args.model_family else False
+        )
+        val_dataset, val_collator = load_msrvtt_data(
+            data_config,
+            'val',
+            processor,
+            summarizer=True,
+            siglip2=True if "siglip" in args.model_family else False
+        )
 
     train_loader = DataLoader(
         train_dataset,
@@ -109,7 +125,8 @@ def main():
         vlm_wrapper=vlm_wrapper,
         global_embeddings_vision=experiment_config.get("global_embeddings_vision", True),
         global_embeddings_text=experiment_config.get("global_embeddings_text", True),
-        random_mask=experiment_config.get("random_mask", False)
+        random_mask=experiment_config.get("random_mask", False),
+        video_num_frames=data_config.get("num_frames") if args.dataset == "msrvtt" else None
     )
 
     # Initialize Lightning module

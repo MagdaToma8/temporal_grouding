@@ -114,10 +114,15 @@ class CaptioningDataCollator:
 
 
 class SummarizerDatasetCollator:
-    def __init__(self, processor=None, process_images=True, siglip2=False):
+    def __init__(self, processor=None, process_images=True, siglip2=False, is_video=False):
         self.processor = processor
         self.process_images = process_images
         self.siglip2 = siglip2
+        # when True, "image" is a list of num_frames PIL frames (one per query video, not
+        # a single image), and each entry in "retrieval_results_images" is itself such a
+        # list (one per retrieved video) rather than a single retrieved image -- see
+        # MSRVTTDatasetSummarizer.
+        self.is_video = is_video
 
     def __call__(self, batch):
         processed_batch = {}
@@ -126,14 +131,21 @@ class SummarizerDatasetCollator:
         processed_batch['img_path'] = np.array([example['img_path'] for example in batch])
         processed_batch['class_label'] = torch.tensor([example['class_label'] for example in batch])
 
-        # Process ground truth images
+        # Process ground truth images (the query item itself)
         if self.process_images and self.processor is not None:
-            if not self.siglip2:
+            if self.is_video:
+                num_frames = len(batch[0]['image'])
+                flattened_frames = [frame for example in batch for frame in example['image']]
+                processed_images = self.processor(images=flattened_frames, return_tensors="pt")
+                pixel_values = processed_images['pixel_values']  # [batch*num_frames, C, H, W]
+                processed_batch['image'] = pixel_values.view(len(batch), num_frames, *pixel_values.shape[1:])
+            elif not self.siglip2:
                 processed_images = self.processor(
                 images=[example['image'] for example in batch],
                     return_tensors="pt",
                     padding=True
                 )
+                processed_batch['image'] = processed_images['pixel_values']
             else:
                 processed_images = self.processor(
                     images=[example['image'] for example in batch],
@@ -142,7 +154,7 @@ class SummarizerDatasetCollator:
                     max_length=64,
                     truncation=True,
                 )
-            processed_batch['image'] = processed_images['pixel_values']
+                processed_batch['image'] = processed_images['pixel_values']
         else:
             processed_batch['image'] = [example['image'] for example in batch]
 
@@ -247,15 +259,36 @@ class SummarizerDatasetCollator:
         # Process retrieval results images
         # Flatten topk retrieved images along the batch dimension
         # Shape for pixel_values:
-        #   [bsz * topk, 3, 224, 224]
+        #   [bsz * topk, 3, 224, 224]  (or, for video: [bsz*topk, num_frames, 3, 224, 224])
+        # Stays flat over bsz*topk (not reshaped to [bsz, topk, ...]) even for video, to match
+        # what AttentiveSummarizer._get_vision_features / the video wrappers expect: they see
+        # this as "bsz*topk independent items", and AttentiveSummarizer.forward regroups the
+        # resulting *embeddings* into [bsz, topk, dim] itself afterward (.view(...)) -- the
+        # image-only path already works this way, so video needs the same flat convention,
+        # just with an extra per-item frame dimension.
         if self.process_images and self.processor is not None:
-            retrieved_images = [img for example in batch for img in example['retrieval_results_images']]
-            processed_retrieval_images = self.processor(
-                images=retrieved_images,
-                return_tensors="pt",
-                padding=True
-            )
-            processed_batch['retrieval_results_images'] = processed_retrieval_images['pixel_values']
+            if self.is_video:
+                topk = len(batch[0]['retrieval_results_images'])
+                num_frames = len(batch[0]['retrieval_results_images'][0])
+                flattened_frames = [
+                    frame
+                    for example in batch
+                    for retrieved_video_frames in example['retrieval_results_images']
+                    for frame in retrieved_video_frames
+                ]
+                processed_retrieval_images = self.processor(images=flattened_frames, return_tensors="pt")
+                pixel_values = processed_retrieval_images['pixel_values']  # [bsz*topk*num_frames, C, H, W]
+                processed_batch['retrieval_results_images'] = pixel_values.view(
+                    len(batch) * topk, num_frames, *pixel_values.shape[1:]
+                )
+            else:
+                retrieved_images = [img for example in batch for img in example['retrieval_results_images']]
+                processed_retrieval_images = self.processor(
+                    images=retrieved_images,
+                    return_tensors="pt",
+                    padding=True
+                )
+                processed_batch['retrieval_results_images'] = processed_retrieval_images['pixel_values']
         else:
             processed_batch['retrieval_results_images'] = [example['retrieval_results_images'] for example in batch]
 

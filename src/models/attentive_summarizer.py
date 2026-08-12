@@ -22,10 +22,17 @@ class AttentiveSummarizer(nn.Module):
             global_embeddings_text: bool = False,
             checkpoint_path: Optional[str] = None,
             random_mask: bool = False,
-            img_size: int = 224
+            img_size: int = 224,
+            video_num_frames: Optional[int] = None,
     ):
         super().__init__()
         self.config = pooler_config
+        # When set, _get_text_features' dummy pixel_values are shaped [batch, video_num_frames,
+        # 3, img_size, img_size] instead of [batch, 3, img_size, img_size] -- required for video
+        # wrappers (CLIPVideoWrapper, ViCLIPWrapper), which assert on 5D pixel_values even when
+        # (as here) the actual vision content is a throwaway dummy, since CLIP-style wrappers'
+        # get_embeddings always computes both text and vision outputs together.
+        self.video_num_frames = video_num_frames
 
         self.vlm_wrapper = vlm_wrapper
         if self.vlm_wrapper is not None:
@@ -85,8 +92,13 @@ class AttentiveSummarizer(nn.Module):
         assert "input_ids" in inputs
         assert "attention_mask" in inputs
 
+        batch_size = len(inputs["input_ids"])
+        if self.video_num_frames is not None:
+            dummy_pixel_values = torch.randn(batch_size, self.video_num_frames, 3, self.img_size, self.img_size)
+        else:
+            dummy_pixel_values = torch.randn(batch_size, 3, self.img_size, self.img_size)
         inputs.update({
-            "pixel_values": torch.randn(len(inputs["input_ids"]), 3, self.img_size, self.img_size).to(self.vlm_wrapper.model.device),
+            "pixel_values": dummy_pixel_values.to(self.vlm_wrapper.model.device),
         })
 
         outputs = self.vlm_wrapper.get_embeddings(
