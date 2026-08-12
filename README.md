@@ -422,3 +422,27 @@ Both fixes were verified locally with `--debug` runs before the real job: full f
 3. **But fine-tuning's raw improvement was actually larger for static captions than temporal ones** -- static gained +7.7 pp (35.5%→43.2%) at 8 frames vs. temporal's +5.0 pp (48.9%→54.0%). If fine-tuning were specifically sharpening motion understanding, the opposite would be expected. This is consistent with the same caption-frequency explanation raised earlier: static captions are 86% of the training data, so there's simply more signal to learn from for that category -- fine-tuning's gains look like general improvement, not motion-targeted improvement.
 
 **Overall takeaway across both experiments (zero-shot and fine-tuned):** ViCLIP-B's joint spatiotemporal attention shows real, if modest, evidence of using cross-frame information specifically for motion-dependent captions (finding 2, both zero-shot and fine-tuned) -- something CLIP mean-pooling never showed in either regime. But the *size* of the improvement from fine-tuning is not concentrated on temporal content (finding 3) -- fine-tuning mostly just makes the model better overall, on top of an architecture that was already somewhat motion-aware from pretraining. Both effects are small relative to the temporal bucket's sample size (n=139), so treat the direction as the finding, not the exact magnitude.
+
+### Relevance feedback on video: PRF
+
+The original paper's core contribution is relevance feedback on top of retrieval, not retrieval alone -- so with a working video backbone in hand, the next step was bringing that back in. `retrieval_pipeline.py`'s PRF path (`--feedback_aggregation images`) needed no code changes for video: it operates purely on already-computed embeddings under the `image_embeds` key, which `ViCLIPWrapper` already populates regardless of whether "image" means a photo or a video.
+
+Tested on zero-shot ViCLIP-B, MSR-VTT test (1,000 videos), one feedback turn, top-5 pseudo-relevant items per query:
+
+| Setting | hits@1 | hits@5 | hits@10 | MRR@10 |
+|---|---|---|---|---|
+| No feedback (baseline) | 37.4% | 59.6% | 71.9% | 47.3% |
+| PRF, `rocchio_beta=0.1` (default) | 37.5% | 60.6% | 71.9% | 47.3% |
+| PRF, `rocchio_beta=0.2` | 36.8% | 59.5% | 71.1% | 46.7% |
+
+The default (conservative, 10%-weight) feedback gives a small, mostly-flat-to-positive nudge. Doubling the feedback weight makes things *worse* across almost every metric, not better. This makes sense given the mechanism: PRF has no ground truth, it just trusts its own top-5 retrieved results as "relevant." At 37% hits@1, a meaningful share of those top-5 lists are wrong, so weighting them more heavily amplifies whatever bias already exists in a middling initial retrieval rather than correcting it. A small nudge stays useful; a strong one doesn't.
+
+### Toward AFS on video
+
+AFS needs, per training example: a query caption, held-out ground-truth captions from the same item, and a first-pass retrieval's top-k results (loaded, as pixels, to feed the summarizer network). That last part already exists as `run_embeddings_and_retrieval.py`, which -- like PRF -- needed no code changes to work for video, verified both structurally (`--debug`) and by content (a query video's own basename showing up in its own retrieval results at a rate far above chance).
+
+Ran at full scale on the fine-tuned ViCLIP-B checkpoint, on MSR-VTT `train` (8,500 videos) and `val` (500 videos), producing the embeddings + top-10 retrieval results AFS training will need. Self-retrieval rate on `train`/`caption_0` (500-video sample): 57.2% in top-10, 25.8% at rank 1 -- lower than the 79.6%/44.7% seen on the 1,000-video test set, but expected rather than a bug: the train candidate pool is 8.5x larger (much harder discrimination task), and `caption_0` specifically likely wasn't the caption fine-tuning happened to sample for that video in any given epoch (training resampled a random single caption per video every epoch, not a fixed one). Both self-retrieval rates are thousands of times above chance level (~0.01%/0.12% for a random guess among 8,500 candidates), confirming the embeddings/retrieval pipeline itself is correct.
+
+Unlike PRF and the embeddings script, **AFS training does not yet support MSR-VTT** -- `train_summarizer.py` only has `flickr`/`coco` branches, and the summarizer-mode dataset (`FlickrDatasetSummarizer`) loads single images, not video frames. Needed next: a `MSRVTTDatasetSummarizer` (mirroring `FlickrDatasetSummarizer`, but sampling frames for both the query video and its top-k retrieved neighbors), a video-aware mode in `SummarizerDatasetCollator`, and a `msrvtt` branch in `train_summarizer.py` -- global mode first, since local mode needs real per-patch tokens `ViCLIPWrapper` doesn't currently expose.
+
+**Next**: try `run_embeddings_and_retrieval.py` against MSR-VTT/ViCLIP-B (prerequisite for AFS training), then global-mode AFS. GRF and local-mode AFS need more groundwork first -- GRF needs a video-captioning step that doesn't exist yet, and local-mode AFS needs real per-patch/per-token features from ViCLIP, which `ViCLIPWrapper` currently only stubs with placeholder pooled embeddings.
