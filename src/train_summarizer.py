@@ -11,6 +11,7 @@ from src.datasets.flickr import load_flickr_data
 from src.datasets.coco import load_coco_data
 from src.datasets.msrvtt import load_msrvtt_data
 from src.models.attentive_summarizer import AttentiveSummarizer, AlignmentAttentiveSummarizer
+from src.models.clip_video_finetuner import load_finetuned_clip_state_dict
 from src.models.configs import get_model_config
 from src.utils.utils import load_yaml_file, generate_experiment_id
 from src.utils.quantization import bitsandbytes_8bit_config
@@ -25,6 +26,13 @@ def parse_args():
     # VLM model
     parser.add_argument('--model_family', type=str, required=True)
     parser.add_argument('--model_id', type=str, required=True)
+    parser.add_argument(
+        '--backbone_checkpoint', type=str, default=None,
+        help="Path to a train_backbone.py checkpoint -- AttentiveSummarizer re-encodes "
+             "retrieved items' raw pixels/text at training time (not just the pre-computed "
+             "embeddings run_embeddings_and_retrieval.py used to pick them), so this should "
+             "match whatever backbone generated --data_config's embeddings_path."
+    )
     # optimization args
     parser.add_argument('--learning_rate', type=float, default=None)
     parser.add_argument('--weight_decay', type=float, default=None)
@@ -33,6 +41,11 @@ def parse_args():
     # processing args
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--use_8bit', action='store_true')
+    parser.add_argument('--disable_wandb', action='store_true', default=False)
+    parser.add_argument(
+        '--debug', action='store_true', default=False,
+        help="Run 2 train/val batches only, to check the training loop is wired correctly"
+    )
     # outputs args
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints')
     return parser.parse_args()
@@ -52,6 +65,9 @@ def main():
         quantization_config=bitsandbytes_8bit_config() if args.use_8bit else None,
         trust_remote_code=True
     )
+    if args.backbone_checkpoint:
+        base_model.load_state_dict(load_finetuned_clip_state_dict(args.backbone_checkpoint))
+        print(f"Loaded fine-tuned backbone weights from {args.backbone_checkpoint}")
     processor = model_config["processor_class"].from_pretrained(model_config["model_id"])
 
     vlm_wrapper = model_config["wrapper_class"](model=base_model, processor=processor)
@@ -87,10 +103,14 @@ def main():
             siglip2=True if "siglip" in args.model_family else False
         )
     elif args.dataset == 'msrvtt':
+        # process_images=True: unlike load_flickr_data/load_coco_data (which default to
+        # True), load_msrvtt_data defaults to False -- every other caller in this codebase
+        # passes it explicitly, so this matches that convention.
         train_dataset, train_collator = load_msrvtt_data(
             data_config,
             'train',
             processor,
+            process_images=True,
             summarizer=True,
             siglip2=True if "siglip" in args.model_family else False
         )
@@ -98,6 +118,7 @@ def main():
             data_config,
             'val',
             processor,
+            process_images=True,
             summarizer=True,
             siglip2=True if "siglip" in args.model_family else False
         )
@@ -156,15 +177,17 @@ def main():
         verbose=True
     )
 
-    wandb_logger = WandbLogger(
-        entity='sensor_har',
-        project=f'{args.dataset}-summarizer-training',
-        name=log_id,
-        config={
-            **data_config,
-            **experiment_config
-        }
-    )
+    logger = False
+    if not args.disable_wandb:
+        logger = WandbLogger(
+            entity='sensor_har',
+            project=f'{args.dataset}-summarizer-training',
+            name=log_id,
+            config={
+                **data_config,
+                **experiment_config
+            }
+        )
 
     trainer = pl.Trainer(
         max_epochs=args.max_epochs or experiment_config.get("max_epochs", 100),
@@ -174,9 +197,11 @@ def main():
             ModelSummary(max_depth=2),
             early_stopping_callback
         ],
-        logger=wandb_logger,
+        logger=logger,
         log_every_n_steps=5,
-        precision="bf16-mixed"
+        precision="bf16-mixed" if torch.cuda.is_available() else 32,
+        limit_train_batches=2 if args.debug else 1.0,
+        limit_val_batches=2 if args.debug else 1.0,
     )
 
     trainer.fit(

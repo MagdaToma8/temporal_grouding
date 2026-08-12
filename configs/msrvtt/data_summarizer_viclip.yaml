@@ -1,0 +1,6 @@
+data_dir: data/msrvtt/
+num_frames: 8
+
+embeddings_path: embeddings/msrvtt/viclip
+topk: 5
+use_generated_captions: False
