@@ -24,6 +24,7 @@ class AttentiveSummarizer(nn.Module):
             random_mask: bool = False,
             img_size: int = 224,
             video_num_frames: Optional[int] = None,
+            text_seq_len: int = 10,
     ):
         super().__init__()
         self.config = pooler_config
@@ -33,6 +34,13 @@ class AttentiveSummarizer(nn.Module):
         # (as here) the actual vision content is a throwaway dummy, since CLIP-style wrappers'
         # get_embeddings always computes both text and vision outputs together.
         self.video_num_frames = video_num_frames
+        # Length of _get_vision_features' dummy input_ids (its content is discarded, only
+        # outputs["image_embeds"]/["vision_model_output"] get used) -- arbitrary and harmless
+        # for CLIP's text encoder, which handles any length up to 77. ViCLIP's text encoder
+        # has no such tolerance: it adds a fixed-size [32, dim] positional embedding directly
+        # to the token embeddings with no slicing, so anything other than exactly 32 tokens
+        # crashes with a shape-mismatch error. Set to VICLIP_CONTEXT_LENGTH for ViCLIP.
+        self.text_seq_len = text_seq_len
 
         self.vlm_wrapper = vlm_wrapper
         if self.vlm_wrapper is not None:
@@ -111,7 +119,9 @@ class AttentiveSummarizer(nn.Module):
         assert self.vlm_wrapper is not None
         assert "pixel_values" in inputs
 
-        input_ids_dummy = torch.randint(0, 100, (len(inputs["pixel_values"]), 10)).to(self.vlm_wrapper.model.device)
+        input_ids_dummy = torch.randint(
+            0, 100, (len(inputs["pixel_values"]), self.text_seq_len)
+        ).to(self.vlm_wrapper.model.device)
         inputs.update({
             "input_ids": input_ids_dummy,
             "attention_mask": torch.ones_like(input_ids_dummy).to(self.vlm_wrapper.model.device),

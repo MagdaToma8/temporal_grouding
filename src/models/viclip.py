@@ -45,7 +45,7 @@ _IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 
 _INPUT_RESOLUTION = 224
 # ViCLIP's own ViCLIP.__init__ hardcodes max_txt_l=32 and re-tokenizes at that context
 # length (not CLIP's usual 77) when building the text encoder from the checkpoint.
-_CONTEXT_LENGTH = 32
+VICLIP_CONTEXT_LENGTH = 32
 
 
 class ViCLIPProcessor:
@@ -60,7 +60,7 @@ class ViCLIPProcessor:
 
     def __init__(self):
         self.tokenizer = SimpleTokenizer()
-        self.context_length = _CONTEXT_LENGTH
+        self.context_length = VICLIP_CONTEXT_LENGTH
 
     @classmethod
     def from_pretrained(cls, model_id: str):

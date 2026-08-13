@@ -13,6 +13,7 @@ from src.datasets.msrvtt import load_msrvtt_data
 from src.models.attentive_summarizer import AttentiveSummarizer, AlignmentAttentiveSummarizer
 from src.models.clip_video_finetuner import load_finetuned_clip_state_dict
 from src.models.configs import get_model_config
+from src.models.viclip import VICLIP_CONTEXT_LENGTH
 from src.utils.utils import load_yaml_file, generate_experiment_id
 from src.utils.quantization import bitsandbytes_8bit_config
 
@@ -147,7 +148,10 @@ def main():
         global_embeddings_vision=experiment_config.get("global_embeddings_vision", True),
         global_embeddings_text=experiment_config.get("global_embeddings_text", True),
         random_mask=experiment_config.get("random_mask", False),
-        video_num_frames=data_config.get("num_frames") if args.dataset == "msrvtt" else None
+        video_num_frames=data_config.get("num_frames") if args.dataset == "msrvtt" else None,
+        # ViCLIP's text encoder has a fixed 32-token context length (no slicing on shorter
+        # input, unlike CLIP), so _get_vision_features' dummy input_ids must match exactly.
+        text_seq_len=VICLIP_CONTEXT_LENGTH if args.model_family == "viclip" else 10,
     )
 
     # Initialize Lightning module
