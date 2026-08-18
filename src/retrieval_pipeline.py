@@ -456,7 +456,12 @@ def main():
         cls_json_file = os.path.join(data_config["data_dir"], "yolo", "classification", f"{args.split}_yolo_text.json")
         classification_texts = load_json_file(cls_json_file)
 
-    if args.feedback_aggregation in ["generated_captions", "attentive_summarizer", "attentive_summarizer_with_gt"]:
+    # GRF always needs captions; AFS only needs them when --summarizer_no_captions isn't set
+    # (this codepath predates that flag's video use case, where no captions file exists at all).
+    if args.feedback_aggregation == "generated_captions" or (
+        args.feedback_aggregation in ["attentive_summarizer", "attentive_summarizer_with_gt"]
+        and not args.summarizer_no_captions
+    ):
         generated_captions_file = os.path.join(data_config["data_dir"], "captions", f"captions_{args.split}.json")
         generated_captions = load_json_file(generated_captions_file)
 
