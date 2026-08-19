@@ -7,6 +7,7 @@ from transformers import (
     Blip2ForImageTextRetrieval,
     CLIPModel,
     LlavaForConditionalGeneration,
+    LlavaNextVideoForConditionalGeneration,
     SiglipModel,
 )
 
@@ -19,6 +20,7 @@ from src.models.blip2 import (
 from src.models.clip import CLIPWrapper
 from src.models.clip_video import CLIPVideoWrapper
 from src.models.llava import LLaVaWrapper
+from src.models.llava_next_video import LlavaNextVideoWrapper
 from src.models.jinaclip import JinaVLMWrapper, JinaProcessor
 from src.models.siglip2 import SigLip2Wrapper
 from src.models.siglip import SigLipWrapper
@@ -67,6 +69,12 @@ CONFIGS = {
         "model_class": LlavaForConditionalGeneration,
         "processor_class": AutoProcessor,
         "wrapper_class": LLaVaWrapper,
+    },
+    "llava_next_video": {
+        "model_id": "llava-hf/LLaVA-NeXT-Video-7B-hf",
+        "model_class": LlavaNextVideoForConditionalGeneration,
+        "processor_class": AutoProcessor,
+        "wrapper_class": LlavaNextVideoWrapper,
     },
     "jinaclip": {
         "model_id": "jinaai/jina-clip-v2",

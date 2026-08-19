@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from src.datasets.cub import load_cub_data
 from src.datasets.flickr import load_flickr_data
 from src.datasets.coco import load_coco_data
+from src.datasets.msrvtt import load_msrvtt_data
 from src.models.configs import get_model_config
 from src.utils.quantization import bitsandbytes_8bit_config
 from src.utils.utils import load_yaml_file
@@ -118,6 +119,12 @@ def main():
         dataset, dataset_collator = load_flickr_data(data_config, args.split, processor, process_images=False)
     elif args.dataset == "coco":
         dataset, dataset_collator = load_coco_data(data_config, args.split, processor, process_images=False)
+    elif args.dataset == "msrvtt":
+        # Use with --model_family llava_next_video: a real video-captioning model, fed all
+        # num_frames sampled frames per video (not one representative frame) so it can
+        # describe motion/events a single frame can't -- reuses MSRVTTDataset purely for its
+        # existing frame-sampling, no new dataset class needed.
+        dataset, dataset_collator = load_msrvtt_data(data_config, args.split, processor, process_images=False)
     else:
         raise ValueError(f"Dataset {args.dataset} not supported")
 
@@ -137,6 +144,13 @@ def main():
         "Write a brief caption, one sentence, that describes the image visual features.",
         "Summarize the image visual features in a precise caption, maximum one sentence."
     ]
+    video_prompt_pool = [
+        "Describe the video and main events in one sentence, focusing on what happens.",
+        "Generate a short caption for this video, focusing on the actions taking place.",
+        "Provide a concise description, one sentence, of what happens in this video.",
+        "Write a brief caption, one sentence, that describes the events in this video.",
+        "Summarize what happens across this video in a precise caption, maximum one sentence."
+    ]
 
     for i, batch in enumerate(tqdm(dataloader)):
         images = batch['image']
@@ -144,7 +158,8 @@ def main():
 
         ## First turn
 
-        prompts = [prompt_pool[j % len(prompt_pool)] for j in range(len(images))]
+        pool = video_prompt_pool if args.dataset == "msrvtt" else prompt_pool
+        prompts = [pool[j % len(pool)] for j in range(len(images))]
 
         processed_prompt = vlm_wrapper.process_inputs(
             image=images,
@@ -157,21 +172,24 @@ def main():
         generated_text = [text.split("ASSISTANT: ")[-1] for text in generated_text_all]
         print(generated_text)
 
-        ## Second turn
-        generated_text_all = [text.replace("USER:  \n", "USER: <image>\n") for text in generated_text_all]
-        refining_prompt = "</s>USER: Pay attention to the visual settings and details on the image. Write exactly one sentence under 10 words. ASSISTANT:"
-        refined_prompts = [generated_text_all[i] + refining_prompt for i in range(len(images))]
-        print(img_path_batch)
-        print(refined_prompts)
-        processed_prompt = vlm_wrapper.process_inputs(
-            apply_template=False,
-            image=images,
-            prompt=refined_prompts,
-        )
+        # Second-turn refinement is tuned to LLaVA-1.5's specific prompt template (the exact
+        # "USER:  \n" -> "USER: <image>\n" substitution below only makes sense for that format)
+        # -- skipped for video, which uses a different model/template (LLaVA-NeXT-Video).
+        if args.dataset != "msrvtt":
+            generated_text_all = [text.replace("USER:  \n", "USER: <image>\n") for text in generated_text_all]
+            refining_prompt = "</s>USER: Pay attention to the visual settings and details on the image. Write exactly one sentence under 10 words. ASSISTANT:"
+            refined_prompts = [generated_text_all[i] + refining_prompt for i in range(len(images))]
+            print(img_path_batch)
+            print(refined_prompts)
+            processed_prompt = vlm_wrapper.process_inputs(
+                apply_template=False,
+                image=images,
+                prompt=refined_prompts,
+            )
 
-        outputs = vlm_wrapper.generate(processed_prompt)
-        generated_text_all = vlm_wrapper.decode(outputs)
-        generated_text = [text.split("ASSISTANT: ")[-1] for text in generated_text_all]
+            outputs = vlm_wrapper.generate(processed_prompt)
+            generated_text_all = vlm_wrapper.decode(outputs)
+            generated_text = [text.split("ASSISTANT: ")[-1] for text in generated_text_all]
 
         print(generated_text)
         captions.extend(generated_text)
