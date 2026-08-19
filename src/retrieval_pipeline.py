@@ -856,19 +856,15 @@ def main():
                                     topk_image_embeddings[j].unsqueeze(0)
                                 )
 
-                            # Get cross-attention weights for image and text tokens
+                            # Get cross-attention weights for image and text tokens. When
+                            # summarizer_no_captions is set, text_inputs was None going into
+                            # the summarizer, so xattn only spans vision tokens at all --
+                            # there is no text portion to slice out or compute relevance from.
                             image_tokens_start = xattn.shape[-1] - topk_image_embeddings[j].shape[0]
-                            xattn_text = xattn[..., :image_tokens_start]
                             xattn_image = xattn[..., image_tokens_start:]
 
                             # Sum cross-attention weights along attention heads and 2 output tokens
                             #   (CLS and text query embedding)
-                            xattn_text_sum = (
-                                xattn_text
-                                .sum(dim=1)
-                                .sum(dim=1)
-                                .view(num_text_items, -1)
-                            )
                             xattn_image_sum = (
                                 xattn_image
                                 .sum(dim=1)
@@ -877,19 +873,30 @@ def main():
                             )
 
                             # Compute softmax of aggregated cross-attention weights
-                            # (1 - xattn_text_sum) is used to get NEGATIVE relevance
-                            xattn_text_softmax = F.softmax((1 - xattn_text_sum) / args.temperature, dim=0)
+                            # (1 - xattn_image_sum) is used to get NEGATIVE relevance
                             xattn_image_softmax = F.softmax((1 - xattn_image_sum) / args.temperature, dim=0)
 
-                            # Aggregate relevance from each image and text embedding
+                            # Aggregate relevance from each image embedding
                             neg_relevance_images = torch.sum(
                                 topk_image_embeddings[j] * xattn_image_softmax,
                                 dim=0
                             )
-                            neg_relevance_texts = torch.sum(
-                                captions_embeddings[j] * xattn_text_softmax,
-                                dim=0
-                            )
+
+                            if not args.summarizer_no_captions:
+                                xattn_text = xattn[..., :image_tokens_start]
+                                xattn_text_sum = (
+                                    xattn_text
+                                    .sum(dim=1)
+                                    .sum(dim=1)
+                                    .view(num_text_items, -1)
+                                )
+                                xattn_text_softmax = F.softmax((1 - xattn_text_sum) / args.temperature, dim=0)
+                                neg_relevance_texts = torch.sum(
+                                    captions_embeddings[j] * xattn_text_softmax,
+                                    dim=0
+                                )
+                            else:
+                                neg_relevance_texts = None
 
                         # Summarization of feedback using local embeddings (patches and tokens)
                         else:
