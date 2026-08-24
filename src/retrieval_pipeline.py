@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 from tqdm import tqdm
+from PIL import Image
 import torch
 import torch.nn.functional as F
 from torchmetrics.functional import pairwise_cosine_similarity
@@ -294,7 +295,8 @@ def get_embeddings_from_captions(
         captions: List[str],
         processor: AutoProcessor,
         vlm_wrapper: VLMWrapper,
-        cpu: bool = False
+        cpu: bool = False,
+        video_num_frames: Optional[int] = None
 ) -> torch.Tensor:
     """
     Get text embeddings from captions
@@ -303,15 +305,36 @@ def get_embeddings_from_captions(
         captions: list of captions
         processor: processor used for vlm_wrapper
         vlm_wrapper: vlm_wrapper
+        video_num_frames: for video wrappers (ViCLIP, CLIPVideoWrapper), whose
+            get_embeddings requires pixel_values shaped [batch, num_frames, C, H, W]
+            and, for ViCLIPProcessor specifically, real PIL images rather than a bare
+            tensor (it calls .convert("RGB") on each). Set to the backbone's num_frames
+            to build a correctly-shaped dummy video input instead of the single dummy
+            image used for image models.
     """
-    # Tokenization with processor used for vlm_wrapper
-    tokenized_text = processor(
-        images=torch.rand(len(captions), 3, 224, 224), # dummy image inputs
-        text=captions,
-        return_tensors="pt",
-        padding=True,
-        truncation=True
-    )
+    if video_num_frames is not None:
+        dummy_images = [
+            Image.new("RGB", (224, 224)) for _ in range(len(captions) * video_num_frames)
+        ]
+        tokenized_text = processor(
+            images=dummy_images,  # dummy image inputs
+            text=captions,
+            return_tensors="pt",
+            padding=True,
+            truncation=True
+        )
+        tokenized_text["pixel_values"] = tokenized_text["pixel_values"].view(
+            len(captions), video_num_frames, *tokenized_text["pixel_values"].shape[1:]
+        )
+    else:
+        # Tokenization with processor used for vlm_wrapper
+        tokenized_text = processor(
+            images=torch.rand(len(captions), 3, 224, 224), # dummy image inputs
+            text=captions,
+            return_tensors="pt",
+            padding=True,
+            truncation=True
+        )
 
     text_tokens = {k: v for k, v in tokenized_text.items() if k != 'pixel_values'} # remove dummy image inputs
 
@@ -753,7 +776,8 @@ def main():
                         object_text_embeddings, tokenized_text = get_embeddings_from_captions(
                             captions=captions,
                             processor=processor,
-                            vlm_wrapper=vlm_wrapper
+                            vlm_wrapper=vlm_wrapper,
+                            video_num_frames=data_config.get("num_frames") if args.dataset == "msrvtt" else None
                         )
                         object_text_embeddings = object_text_embeddings['text_embeds'].detach().cpu()
 
@@ -821,7 +845,8 @@ def main():
                             embeddings, tokenized_text = get_embeddings_from_captions(
                                 captions=captions,
                                 processor=processor,
-                                vlm_wrapper=vlm_wrapper
+                                vlm_wrapper=vlm_wrapper,
+                                video_num_frames=data_config.get("num_frames") if args.dataset == "msrvtt" else None
                             )
                             captions_text_model_outputs.append(embeddings['text_model_output'].detach().cpu())
                             captions_embeddings.append(embeddings['text_embeds'].detach().cpu())
