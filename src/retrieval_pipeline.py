@@ -341,7 +341,13 @@ def get_embeddings_from_captions(
     if cpu:
         vlm_wrapper.model = vlm_wrapper.model.to("cpu")
     else:
-        tokenized_text = tokenized_text.to(vlm_wrapper.model.device)
+        # HF processors return a BatchFeature (has .to()); ViCLIPProcessor returns a
+        # plain dict (no HF AutoProcessor equivalent -- see ViCLIPProcessor's docstring).
+        device = vlm_wrapper.model.device
+        if hasattr(tokenized_text, "to"):
+            tokenized_text = tokenized_text.to(device)
+        else:
+            tokenized_text = {k: v.to(device) for k, v in tokenized_text.items()}
 
     caption_embeddings = vlm_wrapper.get_embeddings(
         inputs=tokenized_text
