@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 from PIL import Image
 from transformers import AutoConfig, AutoModel
 
@@ -136,6 +137,69 @@ class ViCLIPWrapper(VLMWrapper):
             text=kwargs['prompt'],
         )
 
+    def _encode_vision_full(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        """
+        Mirrors ViCLIP's own VisionTransformer.forward (vendored viclip_vision.py, at
+        OpenGVLab/ViCLIP-B-16-hf's HF dynamic-module cache) up through ln_post, computed
+        once so both the pooled (global) and full-sequence (local) outputs can be derived
+        from the same activations -- avoids running the transformer twice per call the way
+        calling encode_vision() separately for the pooled output would. This is a direct
+        translation of that forward pass, not a call into it, since it always takes the
+        `self.proj is None` branch (full sequence, unprojected) regardless of whether this
+        model actually has a projection -- the real proj is applied separately in
+        get_embeddings for the pooled output.
+
+        Returns: [1 + num_patches_per_frame * num_frames, batch, vision_width] (NBD,
+        ViCLIP's own pre-permute layout) -- class token at index 0, then every patch
+        across every frame.
+        """
+        vt = self.model.vision_encoder
+        # [B,T,C,H,W] -> [B,C,T,H,W], mirrors encode_vision's own permute before conv1
+        x = pixel_values.permute(0, 2, 1, 3, 4).contiguous()
+        x = vt.conv1(x)
+        B, C, T, H, W = x.shape
+        x = x.permute(0, 2, 3, 4, 1).reshape(B * T, H * W, C)
+
+        x = torch.cat([
+            vt.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
+            x
+        ], dim=1)
+        x = x + vt.positional_embedding.to(x.dtype)
+
+        cls_tokens = x[:B, :1, :]
+        x = x[:, 1:]
+        x = rearrange(x, '(b t) n m -> (b n) t m', b=B, t=T)
+        if hasattr(vt, 'temporal_positional_embedding'):
+            if x.size(1) == 1:
+                x = x + vt.temporal_positional_embedding.mean(1)
+            else:
+                x = x + vt.temporal_positional_embedding
+        x = rearrange(x, '(b n) t m -> b (n t) m', b=B, t=T)
+
+        x = torch.cat((cls_tokens, x), dim=1)
+        x = vt.ln_pre(x)
+
+        x = x.permute(1, 0, 2)  # BND -> NBD
+        x = vt.transformer(x)
+        return vt.ln_post(x)  # NBD
+
+    def _encode_text_full(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Mirrors ViCLIP's own CLIP_TEXT.forward (vendored viclip_text.py) up through
+        ln_final, computed once so both the pooled (global, EOT-position-only) and
+        full-sequence (local) outputs can be derived from the same activations --
+        avoids running the transformer twice per call.
+
+        Returns: [batch, context_length, text_width] (BLD), unprojected.
+        """
+        te = self.model.text_encoder
+        x = te.token_embedding(input_ids)
+        x = x + te.positional_embedding
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = te.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        return te.ln_final(x)
+
     def get_embeddings(self, inputs: Dict[str, Any], **kwargs) -> Any:
         """
         Args:
@@ -150,27 +214,31 @@ class ViCLIPWrapper(VLMWrapper):
             "ViCLIPWrapper expects pixel_values shaped [batch, num_frames, C, H, W], "
             f"got shape {tuple(pixel_values.shape)}"
         )
-        # ViCLIP's own encode_vision(image, test=True) accepts [B,T,C,H,W] directly
-        # (it permutes to [B,C,T,H,W] internally before the Conv3d patch embedding)
-        # and, with test=True, skips the random token masking used during training.
-        video_embeds = self.model.encode_vision(pixel_values, test=True)
+
+        # Local mode (AFS): per-patch/per-token detail, mirroring how CLIP's HF wrapper
+        # exposes last_hidden_state -- vision keeps the class token (index 0) plus every
+        # patch across every frame, unprojected; text keeps every token position,
+        # unprojected. See _encode_vision_full/_encode_text_full docstrings for why these
+        # reimplement ViCLIP's own forward passes rather than calling encode_vision/
+        # text_encoder directly: those only ever return the pooled output.
+        vt = self.model.vision_encoder
+        vision_seq = self._encode_vision_full(pixel_values)  # NBD
+        vision_local = vision_seq.permute(1, 0, 2)  # NBD -> BND
+        video_embeds = vt.dropout(vision_seq[0]) @ vt.proj
         video_embeds = F.normalize(video_embeds, p=2, dim=-1)
 
-        text_embeds = self.model.text_encoder(inputs['input_ids'])
+        te = self.model.text_encoder
+        text_local = self._encode_text_full(inputs['input_ids'])  # BLD
+        text_embeds = text_local[
+            torch.arange(text_local.shape[0]), inputs['input_ids'].argmax(dim=-1)
+        ] @ te.text_projection
         text_embeds = F.normalize(text_embeds, p=2, dim=-1)
 
         return {
             'image_embeds': video_embeds,
             'text_embeds': text_embeds,
-            # ViCLIP's vision/text towers only expose pooled outputs in this call path
-            # (unlike CLIP's HF wrapper, which also returns last_hidden_state), and
-            # retrieval_pipeline.py unconditionally calls .detach().cpu() on these two
-            # fields even though nothing consumes them for the video backbone yet (they
-            # exist for a future local-mode AFS summarizer). Placeholder pooled tensors
-            # here, not real per-patch/per-token features -- revisit if ViCLIP is ever
-            # used with local-mode AFS.
-            'vision_model_output': video_embeds,
-            'text_model_output': text_embeds,
+            'vision_model_output': vision_local,
+            'text_model_output': text_local,
         }
 
     def generate(self, *args, **kwargs) -> Any:
