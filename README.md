@@ -472,6 +472,29 @@ AFS underperforms *both* the baseline and PRF. Notably, PRF itself flips from mi
 
 The likely cause: this configuration is the simplest possible version of AFS -- **global embeddings only** (one blurry summary vector per retrieved video, no fine-grained patch/token detail) and **no generated captions** (no video-captioning pipeline exists yet to produce them). Both are real simplifications relative to richer configurations the original paper's image-domain AFS could draw on. With only a single coarse vector per retrieved item to work with, the network may simply lack enough signal to learn *when* a retrieved video's evidence is trustworthy versus noise -- a plausible explanation for why it converges to a real, low-but-decreasing loss (it's learning to fit *something*) while still producing a poor retrieval signal in practice. This is a legitimate result, not a bug: relevance feedback's benefit (confirmed for images in the original paper) does not obviously transfer to video without richer inputs than were available here.
 
-**Next**: two deferred pieces of groundwork, either of which could supply the richer signal AFS seems to be missing --
-* **GRF (video captioning)**: extend `captioning_pipeline.py` to extract a representative frame per video and caption it with LLaVA, reusing the existing (already-working) GRF code path once a captions file exists.
-* **Local-mode AFS**: `ViCLIPWrapper`'s `vision_model_output`/`text_model_output` currently just duplicate the pooled global embedding rather than exposing genuine per-patch/per-token detail -- ViCLIP's own vendored code computes these internally (`VisionTransformer.forward`'s `x[1:]`, discarded before the final pooling step) but throws them away before returning. Needs surfacing those intermediate tensors properly.
+**Next**: local-mode AFS (see below) is the remaining deferred piece that could supply the richer signal global-mode AFS seems to be missing.
+
+### GRF on video
+
+GRF (Generative Relevance Feedback) is the same Rocchio-style mechanism as PRF -- average the top-k results, nudge the query toward that average -- but averaging *AI-generated caption embeddings* of the top-k retrieved videos instead of their raw visual embeddings. The bet: a sentence like "a green car races through the street" may be a cleaner, more distilled relevance signal than a blurry pooled visual vector.
+
+**Video captioning pipeline.** `captioning_pipeline.py` had no MSR-VTT/video branch, and the only captioning model wired in (`LLaVaWrapper`, image-only) can't take a whole video. Built `LlavaNextVideoWrapper` (`src/models/llava_next_video.py`), wrapping [LLaVA-NeXT-Video-7B](https://huggingface.co/llava-hf/LLaVA-NeXT-Video-7B-hf) -- native `transformers` support (no `trust_remote_code`, unlike ViCLIP), fed all `num_frames` sampled frames per video (not one representative frame, unlike the original plan) so it can describe motion/events a single frame can't. Verified structurally first (fake frames through the real processor, checking `pixel_values_videos` comes out as `[batch, 8, 3, 336, 336]` and the dataloader's un-processed batch shape matches) before any cluster run, then confirmed on a real `--debug` cluster run that captions actually describe actions/events across frames (e.g. *"a green sports car racing through the streets, narrowly avoiding collisions"*), not just a static scene. Ran at full scale on the 1,000-video test split.
+
+**Two more "written for images, breaks on video" bugs, both in `get_embeddings_from_captions`** (used by GRF to embed the top-k captions) -- neither caught until the real GRF-on-ViCLIP run, since this exact function had never been exercised with a video wrapper before (earlier AFS runs all used `--summarizer_no_captions`):
+* The function builds a dummy image input just to satisfy wrappers whose `get_embeddings` always expects vision+text together -- hardcoded as `torch.rand(N, 3, 224, 224)`, shaped and typed for CLIP-style processors. `ViCLIPProcessor` needs real PIL images (it calls `.convert("RGB")`, which a raw tensor doesn't have) and a 5D `[batch, num_frames, C, H, W]` shape (it's a video model). Added a `video_num_frames` parameter that builds a correctly-shaped dummy video instead when set.
+* HF processors return a `BatchFeature` (has `.to(device)`); `ViCLIPProcessor.__call__` returns a plain `dict` (no HF `AutoProcessor` equivalent exists for ViCLIP -- see its docstring), which has no `.to()`. Fixed by moving tensors to device manually when `.to()` isn't available.
+
+**Result**: same fine-tuned ViCLIP-B backbone, same 1,000-video test set, extending the earlier comparison:
+
+| Setting | hits@1 | hits@5 | hits@10 | MRR@10 |
+|---|---|---|---|---|
+| No feedback (baseline) | **44.7%** | 69.9% | 79.6% | 55.7% |
+| PRF (naive averaging) | 44.5% | 68.6% | 79.5% | 55.5% |
+| AFS (trained, global) | 41.5% | 68.8% | 78.7% | 53.2% |
+| GRF (AI captions) | 44.3% | 68.7% | 79.1% | 54.8% |
+
+GRF is essentially flat/mildly negative -- in the same ballpark as PRF, and clearly less harmful than AFS. The same diagnostic used for AFS applies here too: GRF's feedback vector *alone* (ignoring the original query entirely) gets hits@1 of only 26.6% -- much worse than the plain caption (44.7%), confirming this is "a small amount of mostly-noise blended in," not a strong standalone signal being underweighted. Notably, GRF's standalone signal (26.6%) is meaningfully better than AFS's (18.9%) -- the AI-caption text does carry more usable signal than AFS's blurry pooled vector, even though neither is good enough alone to beat doing nothing. This is consistent with the working theory from the AFS section: richer, more specific input (real sentences vs. one coarse vector) helps somewhat, but on this backbone, no feedback mechanism tried so far beats simply trusting the original query.
+
+### Local-mode AFS
+
+`ViCLIPWrapper`'s `vision_model_output`/`text_model_output` currently just duplicate the pooled global embedding rather than exposing genuine per-patch/per-token detail -- ViCLIP's own vendored code computes these internally (`VisionTransformer.forward`'s `x[1:]`, discarded before the final pooling step) but throws them away before returning. Needs surfacing those intermediate tensors properly so AFS can attend over individual patches/words instead of one blurry vector per item -- directly testing whether global-mode AFS's poor result (above) was caused by information starvation, as hypothesized, or something more fundamental. Not yet started.
