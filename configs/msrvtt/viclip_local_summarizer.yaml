@@ -11,12 +11,12 @@ vision_dim: 768
 learning_rate: 0.0003
 weight_decay: 0.01
 
-# Conservative starting point, not yet tuned: each retrieved video is 1569 vision tokens
-# (1 class token + 196 patches x 8 frames) vs. a single CLIP-B/32 image's ~50 in the
-# image-domain local configs (configs/flickr30k/clip_local_summarizer.yaml uses batch_size
-# 512 at that scale) -- with top_k_feedback=5 retrieved videos plus the query video per
-# example, local-mode AFS here attends over roughly 9,400 vision tokens per training
-# example, ~30x more than any local-mode config tried so far in this project. Verify with
-# --debug first and raise this once real GPU memory usage is known.
-batch_size: 1
+# A --debug run at batch_size=1 (each training example already attends over ~9,400
+# vision tokens -- see git history for the original sizing note) measured only 2.45GB
+# peak GPU memory reserved on a 48GB L40 -- but at batch_size=1, a real epoch would be
+# 8,500 steps and, per that same debug run's step timing, take on the order of 7 hours
+# each. Raised to 8 (matching viclip_global_summarizer.yaml) since memory scales ~linearly
+# with batch size here (per-example sequence length is fixed) -- estimated ~20GB, well
+# within budget. Verify with one more --debug run before committing to a full job.
+batch_size: 8
 max_epochs: 30
