@@ -214,6 +214,10 @@ def main():
         val_dataloaders=val_loader
     )
 
+    if torch.cuda.is_available():
+        print(f"Peak GPU memory allocated: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+        print(f"Peak GPU memory reserved: {torch.cuda.max_memory_reserved() / 1e9:.2f} GB")
+
 
 if __name__ == '__main__':
     main()
