@@ -49,12 +49,28 @@ def parse_args():
     )
     # outputs args
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints')
+    parser.add_argument(
+        '--run_name', type=str, default=None,
+        help="Overrides the auto-generated (timestamp-based) experiment id used to name "
+             "the checkpoint directory. Set this to a fixed value across multiple job "
+             "submissions of a long training run (e.g. one that won't finish inside a "
+             "single SLURM time limit) so they all write to -- and --resume_checkpoint can "
+             "find -- the same checkpoints/<model_id>-<run_name>/ directory."
+    )
+    parser.add_argument(
+        '--resume_checkpoint', type=str, default=None,
+        help="Path to a .ckpt to resume from (epoch, optimizer/scheduler state, and "
+             "early-stopping counter all restored) -- for continuing a run that was cut "
+             "off by a SLURM time limit rather than starting over. Use together with "
+             "--run_name so the resumed run's own new checkpoints land in the same "
+             "directory as the one being resumed from."
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    experiment_id = generate_experiment_id()
+    experiment_id = args.run_name or generate_experiment_id()
     log_id = f"{args.model_id.split('/')[-1]}-{experiment_id}"
 
     experiment_config = load_yaml_file(args.experiment_config)
@@ -172,7 +188,12 @@ def main():
         filename='epoch={epoch}-val_loss={val/loss:.2f}',
         save_top_k=1,
         monitor='val/loss',
-        auto_insert_metric_name=False
+        auto_insert_metric_name=False,
+        # save_last: a last.ckpt updated every epoch regardless of val/loss, so resuming
+        # a run cut off by a SLURM time limit picks up from wherever training actually
+        # stopped -- the best-val_loss checkpoint above could be several epochs stale if
+        # more recent epochs hadn't improved on it yet.
+        save_last=True
     )
     early_stopping_callback = EarlyStopping(
         monitor='val/loss',
@@ -211,7 +232,8 @@ def main():
     trainer.fit(
         model,
         train_dataloaders=train_loader,
-        val_dataloaders=val_loader
+        val_dataloaders=val_loader,
+        ckpt_path=args.resume_checkpoint
     )
 
     if torch.cuda.is_available():

@@ -11,12 +11,15 @@ vision_dim: 768
 learning_rate: 0.0003
 weight_decay: 0.01
 
-# A --debug run at batch_size=1 (each training example already attends over ~9,400
-# vision tokens -- see git history for the original sizing note) measured only 2.45GB
-# peak GPU memory reserved on a 48GB L40 -- but at batch_size=1, a real epoch would be
-# 8,500 steps and, per that same debug run's step timing, take on the order of 7 hours
-# each. Raised to 8 (matching viclip_global_summarizer.yaml) since memory scales ~linearly
-# with batch size here (per-example sequence length is fixed) -- estimated ~20GB, well
-# within budget. Verify with one more --debug run before committing to a full job.
-batch_size: 8
+# --debug runs: batch_size=1 -> 2.45GB reserved, ~2.5s/video; batch_size=8 -> 14.03GB
+# reserved, ~1.9s/video (on a 48GB L40) -- batching gives some per-video speedup but a
+# real 8,500-video epoch at bs=8 is still ~4.4 hours, and this config's 30-epoch budget
+# (matching viclip_global_summarizer.yaml, which never triggered early stopping even at
+# that epoch count) would take multiple days. Training is split across several SLURM
+# job submissions via --run_name/--resume_checkpoint (see job_train_afs_local_viclip.slurm)
+# rather than cutting max_epochs short, to stay comparable to the global-mode run. Raised
+# to 16 for one more speedup try -- extrapolating the bs=1->8 memory growth linearly
+# (~1.65GB/example, ~0.8GB fixed) estimates ~27GB, safely under budget. Verify with one
+# more --debug run before committing to the full (multi-job) run.
+batch_size: 16
 max_epochs: 30
